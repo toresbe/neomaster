@@ -1,13 +1,13 @@
-CC=gcc
+CC=cc
 CXX=g++
 RM=rm -f
-CPPFLAGS=-g -Wall -Wextra $(shell pkg-config --cflags libusb-1.0)
+CPPFLAGS=-g -std=gnu++11 -Wall -Wextra -I. $(shell pkg-config --cflags libusb-1.0 sdl2)
 LDFLAGS=-g 
-LDLIBS=$(shell pkg-config --libs libusb-1.0) -lboost_iostreams
+LDLIBS=/usr/lib/x86_64-linux-gnu/libboost_log.a $(shell pkg-config --libs libusb-1.0 sdl2) -lboost_iostreams -lboost_thread -lboost_system -lpthread -lboost_log
 
 PROG=neomaster
-SRCS=buttons.cpp neomaster.cpp
-OBJS=$(subst .cpp,.o,$(SRCS))
+SRCS=$(wildcard modules/*.cpp) $(wildcard ui/*.cpp)  neomaster.cpp
+OBJS=$(subst .cpp,.o,$(SRCS)) 
 
 all:		$(PROG)
 
