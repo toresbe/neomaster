@@ -1,7 +1,10 @@
 #include "ui.hpp"
+#include <functional>
 #include <chrono>
 #include "../modules/modules.hpp"
-
+#define BOOST_THREAD_PROVIDES_FUTURE
+#include <boost/thread.hpp>
+#include <boost/thread/future.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/thread/thread.hpp>
 
@@ -28,11 +31,17 @@ void UI::start_gui() {
 }
 
 void UI::event_loop() {
+	this->gui->render();
     while (this->running) {
+		boost::packaged_task<bs5_message_t> pt(std::bind(&BS5panel::read_status, this->panel));
+		boost::future<bs5_message_t> fi1 = pt.get_future();
+		boost::thread task(boost::move(pt));
+		
 		SDL_Event event;
 		if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
 			break;
-		this->panel->read_status();
-        this->gui->render();
+		
+		boost::wait_for_any(fi1);
+		this->gui->render();
     }
 }
