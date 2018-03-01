@@ -14,9 +14,9 @@ class UI {
         bool register_ui_module(const UI_module &module);
         void start_gui();
     private:
-        void process_panel_input(const BS5panel::bs5_message &msg);
         ui_module_list_t modules{};
         BS5panel    *panel;
         BS5gui      *gui;
+        bool running = true;
 };
 #endif

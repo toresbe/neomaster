@@ -10,6 +10,7 @@
 #define VENDOR_ID 0x0cd4
 #define PRODUCT_ID 0x1112
 
+/*
 void BS5panel::print_status(const BS5panel::bs5_message &msg) {
     char bar1[64];
     char bar2[64];
@@ -29,26 +30,56 @@ void BS5panel::print_status(const BS5panel::bs5_message &msg) {
         (msg.b4 & 0x40 ? "\x1b[7m" : "\x1b[0m"));
     printf("[%.*s]\n", (int)sizeof(bar3), bar3);
 }
+*/
 
-BS5panel::bs5_message BS5panel::read_status(void) {
+void BS5Input::add_callback(event_t event_filter, input_callback_function_t *callback) {
+    callback_entry new_entry;
+    new_entry.event = event_filter;
+    new_entry.f = callback;
+    this->callback_list.push_front(new_entry);
+};
+
+void BS5Input::fire_event(const event_t event) {
+    for (auto callback_entry: callback_list) {
+        if ((callback_entry.event == event_t::all) | (callback_entry.event == event)) {
+            (* callback_entry.f)(event, this->bs5_state);
+        }
+    }
+};
+
+void BS5Input::new_data(const bs5_message &msg) {
+    // read new data, figure out the consequence, fire events
+    if(msg.wheel_1) {
+        fire_event(event_t::wheel1);
+        this->bs5_state.posWheel1 += msg.wheel_1;
+    }
+    if(msg.wheel_2) {
+        this->bs5_state.posWheel2 += msg.wheel_2;
+    }
+    if(msg.wheel_3 != this->bs5_state.posWheel3) {
+        this->bs5_state.posWheel3 = msg.wheel_3;
+    }
+        this->bs5_state.button_ok = msg.buttons && 0x40;
+        this->bs5_state.button_left = msg.buttons && 0x20;
+        this->bs5_state.button_right = msg.buttons && 0x10;
+}
+
+void BS5panel::read_status(void) {
     // read status, update internal state, and return a message
-    bs5_message msg;
+    BS5Input::bs5_message msg;
     int actual_length;
     int r = libusb_interrupt_transfer(this->device_handle, 0x81 /*LIBUSB_ENDPOINT_IN*/, (unsigned char *)&msg, sizeof(msg), &actual_length, 0);
+    assert (actual_length == 6);
     if (r == 0) {
 	// results of the transaction can now be found in the data buffer
 	// parse them here and report button press
-        this->posWheel1 += msg.wheel_1;
-        this->posWheel2 += msg.wheel_2;
+        this->input::new_data(msg);
     } else {
 	std::cout << "Eek: " << r << std::strerror(errno) << std::endl;
     } 
-    return msg;
 }
 
 BS5panel::BS5panel(void) {
-    int foo;
-    uint8_t ch;
     std::cout << "Object is being created" << std::endl;
     libusb_init(NULL);
     if (BS5panel::open_device()) {
@@ -61,14 +92,20 @@ BS5panel::BS5panel(void) {
 bool is_beosound5(libusb_device *device) {
     struct libusb_device_descriptor desc;
     libusb_get_device_descriptor(device, &desc);
-    std::cout << "candidate:" << std::endl;
-    std::cout << boost::format("0x%04X\t0x%04X\n") % desc.idVendor % desc.idProduct;
+    //std::cout << boost::format("0x%04X\t0x%04Xn") % desc.idVendor % desc.idProduct;
     if ((desc.idVendor == VENDOR_ID) && (desc.idProduct == PRODUCT_ID)) 
         return true;
     return false;
 }
 
-void BS5panel::send_status() {
+void BS5panel::click() {
+    status_flag_t state_with_click = {0x00, 0x00};
+    memcpy(&state_with_click, &this->status_flags, 2);
+    state_with_click[0] |= 0x0F;
+    send_status(state_with_click);
+}
+
+void BS5panel::send_status(status_flag_t status_flags) {
     //foo = libusb_set_configuration(this->device_handle, 0x0200);
     //foo = libusb_set_configuration(this->device_handle, 0x0300); // this means IR enabled
     /*  
@@ -91,15 +128,16 @@ void BS5panel::send_status() {
     //uint8_t bar [2] = { 0x80, 0x00 }; // turns off scren, on LED
     //uint8_t bar [2] = { 0xd0, 0x00 }; //  blinking
     int num_bytes;
-    num_bytes = libusb_control_transfer(this->device_handle, 0x21,  0x09, 0x0200, 0, this->status_flags, 2, 1);
+    num_bytes = libusb_control_transfer(this->device_handle, 0x21,  0x09, 0x0200, 0, status_flags, 2, 1);
+    assert(num_bytes == 2);
 }
 
 void BS5panel::set_backlight(bool is_powered) {
     if(is_powered) 
-        this->status_flags[0] |= 0x40;
+       this->status_flags[0] |= 0x40;
     else
-       this->status_flags[0] ^= 0x40;
-    send_status();
+       this->status_flags[0] &= 0xbf;
+    send_status(this->status_flags);
 }
 
 bool BS5panel::open_device() {
