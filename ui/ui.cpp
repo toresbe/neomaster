@@ -17,20 +17,21 @@ bool UI::register_ui_module(const UI_module &module) {
 void UI::start_gui() {
     this->gui = new BS5gui(this->modules);
     try {
-        this->panel = new BS5panel();
+        this->panel = new USBBS5panel();
         this->panel->set_backlight(true);
         this->gui->panel = this->panel;
     } catch (std::exception & e) {
-        this->panel = nullptr;
+		this->panel = new FakeBS5panel();
+		this->gui->panel = this->panel;
     }
 }
 
 void UI::event_loop() {
     while (this->running) {
-        if (this->panel) 
-            this->panel->read_status();
-        else 
-            boost::this_thread::sleep_for((boost::chrono::milliseconds)100);
+		SDL_Event event;
+		if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
+			break;
+		this->panel->read_status();
         this->gui->render();
     }
 }

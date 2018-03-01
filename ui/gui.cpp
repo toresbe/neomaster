@@ -1,9 +1,16 @@
 #include <boost/log/trivial.hpp>
 #include "ui.hpp"
 #include "gui.hpp"
+
+#include <string>
+
+#ifdef _WIN64
+#include "SDL.h"
+#include "SDL_ttf.h"
+#else
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_ttf.h"
-#include <string>
+#endif
 
 #define SCREEN_WIDTH 1024
 #define SCREEN_HEIGHT 768
@@ -48,12 +55,13 @@ SDL_Surface *ModuleWheel::render() {
 ModuleWheel::ModuleWheel(ui_module_list_t module_list) {
     this->module_list = module_list;
     this->surface = SDL_CreateRGBSurface(0, SCREEN_WIDTH, SCREEN_HEIGHT, 32, 0,0,0,0);
-    this->font=TTF_OpenFont("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf", 28);
-    this->font_line_height = TTF_FontLineSkip(this->font);
+
+    this->font=TTF_OpenFont("fonts/FreeSansBold.ttf", 28);
     if(!this->font) {
         printf("TTF_OpenFont: %s\n", TTF_GetError());
         // handle error
     }
+	this->font_line_height = TTF_FontLineSkip(this->font);
     SDL_FillRect(this->surface, 0, SDL_MapRGB(this->surface->format, 255, 0, 0));
 }
 
@@ -93,7 +101,7 @@ bool BS5gui::sdl_init()
     return success;
 }
 
-void BS5gui::input_callback(BS5Input::event_t event, BS5Input::bs5_state_t state) {
+void BS5gui::input_callback(BS5input::event_t event, BS5input::bs5_state_t state) {
     BOOST_LOG_TRIVIAL(debug) << "Callback fired";
 }
 
@@ -101,17 +109,20 @@ BS5gui::BS5gui(ui_module_list_t & ui_module_list) {
     sdl_init();
     this->module_wheel = new ModuleWheel(ui_module_list);
     this->layer_list.push_front(&this->module_wheel->surface);
-    this->panel->input.add_callback(BS5Input::event_t::all, input_callback);
     render();
 }
 
 void BS5gui::render() {
     BOOST_LOG_TRIVIAL(debug) << "Rendering frame";
-    this->module_wheel->bg_color = {
-                this->panel->input.bs5_state.posWheel1 % 255, 
-                this->panel->input.bs5_state.posWheel2 % 255, 
-                this->panel->input.bs5_state.posWheel3,
-                255};
+	if (this->panel != nullptr) {
+		this->module_wheel->bg_color = {
+			(uint8_t)(this->panel->input.bs5_state.posWheel1 % 255),
+			(uint8_t)(this->panel->input.bs5_state.posWheel2 % 255),
+			(uint8_t)(this->panel->input.bs5_state.posWheel3),
+					(uint8_t)255 };
+	} else {
+		this->module_wheel->bg_color = {0xff, 0xf0, 0x0f, 0xff};
+	}
     this->module_wheel->render();
     for(auto layer: this->layer_list) {
         SDL_BlitSurface(*layer, 0, this->window_surface, 0);

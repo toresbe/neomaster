@@ -1,8 +1,9 @@
 #include <boost/thread.hpp>
 #include "modules/modules.hpp"
 #include "ui/ui.hpp"
+#include "SDL.h"
 
-int main(void) {
+int main(int argc, char *argv[]) {
     UI ui;
     ModuleManager manager;
     for( auto module: manager.get_ui_modules() ) 

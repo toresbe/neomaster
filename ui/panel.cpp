@@ -1,5 +1,6 @@
 #include <libusb-1.0/libusb.h>
 #include <boost/log/trivial.hpp>
+#include <boost/thread.hpp>
 #include <iostream>
 #include "ui/panel.hpp"
 #include <boost/format.hpp>
@@ -11,7 +12,7 @@
 #define PRODUCT_ID 0x1112
 
 /*
-void BS5panel::print_status(const BS5panel::bs5_message &msg) {
+void USBBS5panel::print_status(const USBBS5panel::bs5_message_t &msg) {
     char bar1[64];
     char bar2[64];
     char bar3[64];
@@ -32,25 +33,9 @@ void BS5panel::print_status(const BS5panel::bs5_message &msg) {
 }
 */
 
-void BS5Input::add_callback(event_t event_filter, input_callback_function_t *callback) {
-    callback_entry new_entry;
-    new_entry.event = event_filter;
-    new_entry.f = callback;
-    this->callback_list.push_front(new_entry);
-};
-
-void BS5Input::fire_event(const event_t event) {
-    for (auto callback_entry: callback_list) {
-        if ((callback_entry.event == event_t::all) | (callback_entry.event == event)) {
-            (* callback_entry.f)(event, this->bs5_state);
-        }
-    }
-};
-
-void BS5Input::new_data(const bs5_message &msg) {
+void BS5input::parse_message(const bs5_message_t &msg) {
     // read new data, figure out the consequence, fire events
     if(msg.wheel_1) {
-        fire_event(event_t::wheel1);
         this->bs5_state.posWheel1 += msg.wheel_1;
     }
     if(msg.wheel_2) {
@@ -64,25 +49,26 @@ void BS5Input::new_data(const bs5_message &msg) {
         this->bs5_state.button_right = msg.buttons && 0x10;
 }
 
-void BS5panel::read_status(void) {
+bs5_message_t USBBS5panel::read_status(void) {
     // read status, update internal state, and return a message
-    BS5Input::bs5_message msg;
+    bs5_message_t msg;
     int actual_length;
     int r = libusb_interrupt_transfer(this->device_handle, 0x81 /*LIBUSB_ENDPOINT_IN*/, (unsigned char *)&msg, sizeof(msg), &actual_length, 0);
     assert (actual_length == 6);
     if (r == 0) {
 	// results of the transaction can now be found in the data buffer
 	// parse them here and report button press
-        this->input::new_data(msg);
+        this->input.parse_message(msg);
     } else {
 	std::cout << "Eek: " << r << std::strerror(errno) << std::endl;
     } 
+	return msg;
 }
 
-BS5panel::BS5panel(void) {
+USBBS5panel::USBBS5panel(void) {
     std::cout << "Object is being created" << std::endl;
     libusb_init(NULL);
-    if (BS5panel::open_device()) {
+    if (USBBS5panel::open_device()) {
         BOOST_LOG_TRIVIAL(debug) << "Opened BS5 panel device.";
     } else {
         throw bs5_panel_exception() << bs5_panel_exception_info("Failed to open BS5 panel device.");
@@ -98,14 +84,14 @@ bool is_beosound5(libusb_device *device) {
     return false;
 }
 
-void BS5panel::click() {
+void USBBS5panel::click() {
     status_flag_t state_with_click = {0x00, 0x00};
     memcpy(&state_with_click, &this->status_flags, 2);
     state_with_click[0] |= 0x0F;
     send_status(state_with_click);
 }
 
-void BS5panel::send_status(status_flag_t status_flags) {
+void USBBS5panel::send_status(status_flag_t status_flags) {
     //foo = libusb_set_configuration(this->device_handle, 0x0200);
     //foo = libusb_set_configuration(this->device_handle, 0x0300); // this means IR enabled
     /*  
@@ -132,7 +118,7 @@ void BS5panel::send_status(status_flag_t status_flags) {
     assert(num_bytes == 2);
 }
 
-void BS5panel::set_backlight(bool is_powered) {
+void USBBS5panel::set_backlight(bool is_powered) {
     if(is_powered) 
        this->status_flags[0] |= 0x40;
     else
@@ -140,7 +126,7 @@ void BS5panel::set_backlight(bool is_powered) {
     send_status(this->status_flags);
 }
 
-bool BS5panel::open_device() {
+bool USBBS5panel::open_device() {
     // discover devices
     libusb_device **list;
     libusb_device *found = NULL;
@@ -166,3 +152,4 @@ bool BS5panel::open_device() {
     libusb_free_device_list(list, 1);
     return false;
 }
+

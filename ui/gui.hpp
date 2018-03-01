@@ -1,7 +1,14 @@
 #include "../modules/modules.hpp"
+#include "panel.hpp"
+
+#ifdef _WIN64
+#include "SDL.h"
+#include "SDL_ttf.h"
+#else
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_ttf.h"
-#include "panel.hpp"
+#endif
+
 #ifndef GUI_HPP
 
 #define GUI_HPP
@@ -25,9 +32,9 @@ class BS5gui {
     public:
         BS5gui(ui_module_list_t & ui_module_list);
         void render();
-        BS5panel *panel;
+        BS5panel *panel = nullptr;
     private:
-        void input_callback(BS5Input::event_t event, BS5Input::bs5_state_t state);
+        void input_callback(BS5input::event_t event, BS5input::bs5_state_t state);
         ModuleWheel* module_wheel;
         bool sdl_init();
         SDL_Window* window;
