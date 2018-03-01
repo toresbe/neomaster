@@ -35,12 +35,12 @@ bs5_message_t FakeBS5panel::read_status()
 		if (this->input.bs5_state.posWheel2 <= 0) this->phase++;
 		break;
 	case 4:
-		x.wheel_3 += 1;
-		if (this->input.bs5_state.posWheel2 >= 0x7f) this->phase++;
+		x.wheel_3 = this->input.bs5_state.posWheel3 + 1;
+		if (this->input.bs5_state.posWheel3 >= 0x7f) this->phase++;
 		break;
 	case 5:
-		x.wheel_3 -= 1;
-		if (this->input.bs5_state.posWheel2 <= 0) this->phase = 0;
+		x.wheel_3 = this->input.bs5_state.posWheel3 - 1;
+		if (this->input.bs5_state.posWheel3 <= 0) this->phase = 0;
 		break;
 	default:
 		x.buttons |= 0x40;
