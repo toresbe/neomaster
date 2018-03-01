@@ -113,7 +113,7 @@ BS5gui::BS5gui(ui_module_list_t & ui_module_list) {
 }
 
 void BS5gui::render() {
-    BOOST_LOG_TRIVIAL(debug) << "Rendering frame";
+    //BOOST_LOG_TRIVIAL(debug) << "Rendering frame";
 	if (this->panel != nullptr) {
 		this->module_wheel->bg_color = {
 			(uint8_t)(this->panel->input.bs5_state.posWheel1 % 255),
