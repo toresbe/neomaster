@@ -16,14 +16,15 @@ bool UI::register_ui_module(const UI_module &module) {
 
 void UI::start_gui() {
     this->gui = new BS5gui(this->modules);
+	// If the real panel doesn't work, we just use a dummy panel that feeds various inputs.
     try {
         this->panel = new USBBS5panel();
-        this->panel->set_backlight(true);
-        this->gui->panel = this->panel;
     } catch (std::exception & e) {
+		BOOST_LOG_TRIVIAL(warning) << "Could not connect to BS5 panel! Using fake panel.";
 		this->panel = new FakeBS5panel();
-		this->gui->panel = this->panel;
     }
+	this->panel->set_backlight(true);
+	this->gui->panel = this->panel;
 }
 
 void UI::event_loop() {
