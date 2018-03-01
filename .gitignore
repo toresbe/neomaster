@@ -33,3 +33,8 @@
 
 # Target executable
 /neomaster
+
+#Visual Studio stuff
+/.vs
+/Debug
+/x64
