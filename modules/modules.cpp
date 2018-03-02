@@ -6,6 +6,10 @@
 ModuleManager::ModuleManager() {
     TestModule test;
     this->module_list.push_front(test);
+	TestModule test2;
+	this->module_list.push_front(test2);
+	TestModule test3;
+	this->module_list.push_front(test3);
 };
 
 ui_module_list_t ModuleManager::get_ui_modules() {
