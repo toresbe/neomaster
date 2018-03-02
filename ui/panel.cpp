@@ -49,9 +49,11 @@ void BS5input::parse_message(const bs5_message_t &msg) {
         this->bs5_state.button_right = msg.buttons && 0x10;
 }
 
-bs5_message_t USBBS5panel::read_status(void) {
+BS5input::bs5_damage_t USBBS5panel::read_status(void) {
     // read status, update internal state, and return a message
+	// FIXME: Will not return correct damage map!
     bs5_message_t msg;
+	BS5input::bs5_damage_t damage;
     int actual_length;
     int r = libusb_interrupt_transfer(this->device_handle, 0x81 /*LIBUSB_ENDPOINT_IN*/, (unsigned char *)&msg, sizeof(msg), &actual_length, 0);
     assert (actual_length == 6);
@@ -59,10 +61,15 @@ bs5_message_t USBBS5panel::read_status(void) {
 	// results of the transaction can now be found in the data buffer
 	// parse them here and report button press
         this->input.parse_message(msg);
+		damage = {
+			msg.wheel_1 ? true : false,
+			msg.wheel_2 ? true : false,
+			msg.wheel_3 != this->input.bs5_state.posWheel3 ? true : false,
+			false };
     } else {
 	std::cout << "Eek: " << r << std::strerror(errno) << std::endl;
     } 
-	return msg;
+	return damage;
 }
 
 USBBS5panel::USBBS5panel(void) {

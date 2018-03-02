@@ -32,9 +32,10 @@ void UI::start_gui() {
 
 void UI::event_loop() {
 	this->gui->render();
+	BS5input::bs5_damage_t damage;
     while (this->running) {
-		boost::packaged_task<bs5_message_t> pt(std::bind(&BS5panel::read_status, this->panel));
-		boost::future<bs5_message_t> fi1 = pt.get_future();
+		boost::packaged_task<BS5input::bs5_damage_t> pt(std::bind(&BS5panel::read_status, this->panel));
+		boost::future<BS5input::bs5_damage_t> fi1 = pt.get_future();
 		boost::thread task(boost::move(pt));
 		
 		SDL_Event event;
@@ -42,6 +43,9 @@ void UI::event_loop() {
 			break;
 		
 		boost::wait_for_any(fi1);
-		this->gui->render();
+		if (fi1.is_ready()) {
+			damage = fi1.get();
+			this->gui->handle_panel_input(damage, this->panel->input.bs5_state);
+		}
     }
 }

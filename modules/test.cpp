@@ -5,6 +5,7 @@
 
 TestModule::TestModule() {
     this->ui_module = new UI_module;
-    this->ui_module->label = "Test module";
+    this->ui_module->description = "Test module";
+	this->ui_module->label = "TEST";
     std::cout << "Instantiated\n";
 };

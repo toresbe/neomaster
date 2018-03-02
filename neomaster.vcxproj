@@ -22,6 +22,7 @@
     <VCProjectVersion>15.0</VCProjectVersion>
     <ProjectGuid>{44B3915F-9E61-4709-B57D-A194AD66C5EC}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0.16299.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -70,7 +71,7 @@
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <IncludePath>c:\Users\toresbe\Source\Repos\neomaster;C:\local\SDL2_ttf-2.0.14\include;C:\local\SDL2-2.0.7\include;C:\local\libusb-1.0.21\include;C:\local\boost_1_66_0;$(IncludePath)</IncludePath>
+    <IncludePath>C:\local\SDL2_image-2.0.2\include;c:\Users\toresbe\Source\Repos\neomaster;C:\local\SDL2_ttf-2.0.14\include;C:\local\SDL2-2.0.7\include;C:\local\libusb-1.0.21\include;C:\local\boost_1_66_0;$(IncludePath)</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -104,9 +105,9 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Link>
-      <AdditionalLibraryDirectories>C:\local\SDL2_ttf-2.0.14\lib\x64;C:\local\libusb-1.0.21\MS64\dll;C:\local\SDL2-2.0.7\lib\x64;C:\local\boost_1_66_0\lib64-msvc-14.1;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>C:\local\SDL2_image-2.0.2\lib\x64;C:\local\SDL2_ttf-2.0.14\lib\x64;C:\local\libusb-1.0.21\MS64\dll;C:\local\SDL2-2.0.7\lib\x64;C:\local\boost_1_66_0\lib64-msvc-14.1;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <SubSystem>Console</SubSystem>
-      <AdditionalDependencies>SDL2main.lib;sdl2_ttf.lib;sdl2.lib;libusb-1.0.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>SDL2main.lib;sdl2_ttf.lib;sdl2_image.lib;sdl2.lib;libusb-1.0.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EntryPointSymbol>
       </EntryPointSymbol>
     </Link>
@@ -120,6 +121,7 @@
     <ClCompile Include="neomaster.cpp" />
     <ClCompile Include="ui\fake_panel.cpp" />
     <ClCompile Include="ui\gui.cpp" />
+    <ClCompile Include="ui\module_wheel.cpp" />
     <ClCompile Include="ui\panel.cpp" />
     <ClCompile Include="ui\ui.cpp" />
   </ItemGroup>

@@ -8,9 +8,10 @@
 class UI_module {
     public:
         std::string label;
+		std::string description;
 };
 
-typedef std::forward_list<UI_module > ui_module_list_t;
+typedef std::forward_list<UI_module> ui_module_list_t;
 
 class NeomasterModule {
     public:
@@ -25,8 +26,4 @@ class ModuleManager {
         module_list_t module_list;
         ui_module_list_t get_ui_modules();
 };
-
-
-
-
 #endif
