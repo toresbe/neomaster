@@ -60,12 +60,12 @@ BS5input::bs5_damage_t USBBS5panel::read_status(void) {
     if (r == 0) {
 	// results of the transaction can now be found in the data buffer
 	// parse them here and report button press
+        damage = {
+            msg.wheel_1 ? true : false,
+            msg.wheel_2 ? true : false,
+            (msg.wheel_3 != this->input.bs5_state.posWheel3) ? true : false,
+            false };
         this->input.parse_message(msg);
-		damage = {
-			msg.wheel_1 ? true : false,
-			msg.wheel_2 ? true : false,
-			msg.wheel_3 != this->input.bs5_state.posWheel3 ? true : false,
-			false };
     } else {
 	std::cout << "Eek: " << r << std::strerror(errno) << std::endl;
     } 
