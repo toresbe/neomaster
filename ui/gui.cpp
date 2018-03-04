@@ -51,29 +51,33 @@ bool NeomasterUI::sdl_init()
 }
 
 NeomasterUI::NeomasterUI(module_list_t & module_list) {
-    sdl_init();
-	for (auto module: module_list) {
+	sdl_init();
+	for (auto module : module_list) {
 		if (module->get_ui_module() != nullptr) {
 			module->get_ui_module()->attach_ui(this);
 			this->ui_module_list.push_front(module->get_ui_module());
 		}
 	}
-    this->module_wheel = new ModuleWheel(this->renderer, this->ui_module_list);
-	this->active_module = *this->ui_module_list.begin();
-	this->active_module->show();
-    draw();
+	this->module_wheel = new ModuleWheel(this->renderer, this->ui_module_list);
+
+	draw();
 }
 
 void NeomasterUI::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state) {
 	if (damage.wheel_3) {
 		this->module_wheel->handle_panel_input(damage, state);
-		//this->module_wheel
 	}
 	this->draw();
 }
 
 void NeomasterUI::draw() {
-	this->active_module->draw();
+	if (this->module_wheel->selected_module != nullptr) {
+		this->module_wheel->selected_module->draw();
+	}
+	else {
+		SDL_SetRenderDrawColor(this->renderer, 0, 0, 0, 255);
+		SDL_RenderClear(this->renderer);
+	}
 	this->module_wheel->render();
 	SDL_RenderPresent(this->renderer);
 }

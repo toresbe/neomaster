@@ -16,10 +16,27 @@
 #include "SDL2/SDL_image.h"
 #endif
 
-typedef std::pair<SDL_Texture *, SDL_Rect> text_texture_t;
+typedef std::pair<SDL_Texture *, SDL_Rect> text_texture_t; // convert to struct to enable with/without hilight
 std::map<std::string, text_texture_t> text_texture_map; // this could be specialised to automatically free surfaces
 SDL_Texture * background_texture = nullptr;
-void ModuleWheel::module_wheel_moved() { };
+typedef struct module_bitmap_entry_t {
+	int top;
+	int bottom;
+	NeomasterModuleUI *module;
+} module_bitmap_entry_t;
+std::forward_list<module_bitmap_entry_t> module_bitmap_list;
+
+NeomasterModuleUI *ModuleWheel::new_selected_module(int posWheel3) {
+	int x = (this->input_state.posWheel3 / 127.0) * (SCREEN_HEIGHT + 200) - 100;
+	for (auto bitmap : module_bitmap_list) {
+		if (
+			(x >= bitmap.top) &&
+			(x <= bitmap.bottom)
+			)
+			return bitmap.module;
+	}
+	return nullptr;
+};
 
 void ModuleWheel::render_background() {
 	if (background_texture == nullptr) {
@@ -102,7 +119,23 @@ void ModuleWheel::handle_panel_input(const BS5input::bs5_damage_t & damage, cons
 	if (damage.wheel_3)
 	{
 		this->input_state = state;
+		NeomasterModuleUI * new_module = new_selected_module(state.posWheel3);
+		if (this->selected_module != new_module) {/*
+			if (this->selected_module != nullptr)
+				this->selected_module->hide();*/
+			if (new_module != nullptr)
+				new_module->show();
+			this->selected_module = new_module;
+		}
 	}
+}
+
+void ModuleWheel::add_module_bitmap_entry(NeomasterModuleUI *module, const SDL_Rect &rect) {
+	module_bitmap_entry_t entry;
+	entry.top = rect.x;
+	entry.bottom = rect.x + this->font_line_height;
+	entry.module = module;
+	module_bitmap_list.push_front(entry);
 }
 
 void ModuleWheel::render_modules()
@@ -116,13 +149,13 @@ void ModuleWheel::render_modules()
 	for (auto module : this->module_list) num_modules++;
 
 	for (auto module : this->module_list) {
-		render_text(module->label, get_rekt(num_modules, module_index++));
+		SDL_Rect rekt = get_rekt(num_modules, module_index++);
+		add_module_bitmap_entry(module, rekt);
+		render_text(module->label, rekt);
 	}
 }
 
 void ModuleWheel::render() {
-	//SDL_SetRenderDrawColor(this->renderer, this->bg_color.r, this->bg_color.b, this->bg_color.g, 255);
-	//SDL_RenderClear(this->renderer);
 	render_background();
 	render_modules();
 	render_beam();
@@ -130,6 +163,7 @@ void ModuleWheel::render() {
 
 ModuleWheel::ModuleWheel(SDL_Renderer * renderer, ui_module_list_t module_list) {
 	this->module_list = module_list;
+	this->selected_module = nullptr;
 	this->font = TTF_OpenFont("fonts/FreeSansBold.ttf", 28);
 	if (!this->font) {
 		printf("TTF_OpenFont: %s\n", TTF_GetError());

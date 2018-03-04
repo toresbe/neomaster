@@ -15,10 +15,13 @@
 class ModuleWheel {
 public:
 	void module_wheel_moved();
+	NeomasterModuleUI * new_selected_module(int posWheel3);
 	void render_background();
 	ModuleWheel(SDL_Renderer * renderer, ui_module_list_t module_list);
 	void render();
 	void handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state);
+	void add_module_bitmap_entry(NeomasterModuleUI * module, const SDL_Rect & rect);
+	NeomasterModuleUI * selected_module;
 	SDL_Color fg_color = { 255, 255, 255, 255 };
 	SDL_Color bg_color = { 255, 255, 255, 255 };
 private:
