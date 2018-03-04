@@ -99,7 +99,6 @@ namespace GUI {
 
 	void NeomasterUI::event_loop() {
 		this->draw();
-		Panel::input_damage_t damage;
 		while (this->running) {
 			boost::packaged_task<Panel::input_damage_t> pt(std::bind(&Panel::Device::read_status, this->panel));
 			boost::future<Panel::input_damage_t> fi1 = pt.get_future();
@@ -111,10 +110,11 @@ namespace GUI {
 
 			boost::wait_for_any(fi1);
 			if (fi1.is_ready()) {
-				damage = fi1.get();
+                                Panel::input_damage_t damage = fi1.get();
 				if (this->panel->input.bs5_state.button_ok) running = false;
 				handle_panel_input(damage, this->panel->input.bs5_state);
 			}
 		}
+                this->panel->set_backlight(false);
 	}
 }
