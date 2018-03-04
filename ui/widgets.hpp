@@ -15,26 +15,27 @@
 
 #include "ui/gui.hpp"
 
-class NeomasterUI;
+namespace GUI { class NeomasterUI; };
+namespace Widget {
+	class NMWidget {
+	public:
+		virtual	void draw() = 0;
+	protected:
+		GUI::NeomasterUI * ui = nullptr;
+	};
 
-class NMWidget {
-public:
-	virtual	void draw() = 0;
-protected:
-	NeomasterUI * ui = nullptr;
-};
+	class NMProgressBar : public NMWidget {
+	public:
+		NMProgressBar(GUI::NeomasterUI * ui, int x, int y, int h, int w);
+		void set_value(float value);
+		void draw();
+	private:
+		SDL_Rect frame, bar, gap;
+		int x, y, h, w;
+	};
 
-class NMProgressBar : public NMWidget {
-public:
-	NMProgressBar(NeomasterUI * ui, int x, int y, int h, int w);
-	void set_value(float value);
-	void draw();
-private:
-	SDL_Rect frame, bar, gap;
-	int x, y, h, w;
-};
+	class NMImage : public NMWidget {
 
-class NMImage : public NMWidget {
-
-};
+	};
+}
 #endif

@@ -3,13 +3,11 @@
 #include "ui/ui.hpp"
 #include "SDL.h"
 
-int main(int argc, char *argv[]) {
-    UI ui;
-    ModuleManager manager;
-    for( auto module: manager.module_list ) 
-        ui.register_module(module);
+int main(int argc, char *argv[]) {    
+    Modules::Manager manager;
+	GUI::NeomasterUI ui(manager.module_list);
     ui.start_gui();
-    boost::thread ui_thread(boost::bind(&UI::event_loop, &ui));
+    boost::thread ui_thread(boost::bind(&GUI::NeomasterUI::event_loop, &ui));
 
     ui_thread.join();
     return 0;
