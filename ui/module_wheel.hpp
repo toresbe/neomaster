@@ -18,7 +18,7 @@ namespace GUI {
 		void module_wheel_moved();
 		Modules::NeomasterModuleUI * new_selected_module(int posWheel3);
 		void render_background();
-		GUI::ModuleWheel(SDL_Renderer * renderer, Modules::ui_module_list_t module_list);
+		ModuleWheel(SDL_Renderer * renderer, Modules::ui_module_list_t module_list);
 		void render();
 		void handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state);
 		void add_module_bitmap_entry(Modules::NeomasterModuleUI * module, const SDL_Rect & rect);
