@@ -11,7 +11,7 @@ namespace Modules {
 		this->module_list.push_front(new Modules::Test::Module);
 	}
 
-	void NeomasterModuleUI::attach_ui(NeomasterUI * ui)
+	void NeomasterModuleUI::attach_ui(GUI::NeomasterUI * ui)
 	{
 		this->ui = ui;
 		this->initialize();

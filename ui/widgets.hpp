@@ -15,18 +15,18 @@
 
 #include "ui/gui.hpp"
 
-class NeomasterUI;
+namespace GUI { class NeomasterUI; };
 namespace Widget {
 	class NMWidget {
 	public:
 		virtual	void draw() = 0;
 	protected:
-		NeomasterUI * ui = nullptr;
+		GUI::NeomasterUI * ui = nullptr;
 	};
 
 	class NMProgressBar : public NMWidget {
 	public:
-		NMProgressBar(NeomasterUI * ui, int x, int y, int h, int w);
+		NMProgressBar(GUI::NeomasterUI * ui, int x, int y, int h, int w);
 		void set_value(float value);
 		void draw();
 	private:

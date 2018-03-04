@@ -8,7 +8,7 @@
 #endif
 
 namespace Widget {
-	NMProgressBar::NMProgressBar(NeomasterUI * ui, int x, int y, int w, int h) {
+	NMProgressBar::NMProgressBar(GUI::NeomasterUI * ui, int x, int y, int w, int h) {
 		this->x = x;
 		this->y = y;
 		this->w = w;

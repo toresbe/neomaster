@@ -5,9 +5,9 @@
 
 int main(int argc, char *argv[]) {    
     Modules::Manager manager;
-	NeomasterUI ui(manager.module_list);
+	GUI::NeomasterUI ui(manager.module_list);
     ui.start_gui();
-    boost::thread ui_thread(boost::bind(&NeomasterUI::event_loop, &ui));
+    boost::thread ui_thread(boost::bind(&GUI::NeomasterUI::event_loop, &ui));
 
     ui_thread.join();
     return 0;

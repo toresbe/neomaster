@@ -15,7 +15,7 @@
 #include "SDL2/SDL_ttf.h"
 #endif
 
-class NeomasterUI;
+namespace GUI { class NeomasterUI; }
 namespace Modules {
 	class NeomasterModuleUI {
 	public:
@@ -23,10 +23,10 @@ namespace Modules {
 		virtual void initialize() = 0;
 		virtual void draw() = 0;
 		virtual void handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state) = 0;
-		void attach_ui(NeomasterUI * ui);
+		void attach_ui(GUI::NeomasterUI * ui);
 		std::string label;
 		std::string description;
-		NeomasterUI * ui;
+		GUI::NeomasterUI * ui;
 	protected:
 	};
 
