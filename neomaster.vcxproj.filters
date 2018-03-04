@@ -30,9 +30,6 @@
     <ClCompile Include="ui\panel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ui\ui.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="ui\fake_panel.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -54,9 +51,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ui\panel.hpp">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\ui.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ui\widgets.hpp">

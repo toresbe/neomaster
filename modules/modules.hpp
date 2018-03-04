@@ -16,34 +16,35 @@
 #endif
 
 class NeomasterUI;
+namespace Modules {
+	class NeomasterModuleUI {
+	public:
+		virtual void show() = 0;
+		virtual void initialize() = 0;
+		virtual void draw() = 0;
+		virtual void handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state) = 0;
+		void attach_ui(NeomasterUI * ui);
+		std::string label;
+		std::string description;
+		NeomasterUI * ui;
+	protected:
+	};
 
-class NeomasterModuleUI {
-public:
-	virtual void show() = 0;
-	virtual void initialize() = 0;
-	virtual void draw() = 0;
-	virtual void handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state) = 0;
-	void attach_ui(NeomasterUI * ui);
-	std::string label;
-	std::string description;
-	NeomasterUI * ui;
-protected:
-};
+	typedef std::forward_list<NeomasterModuleUI *> ui_module_list_t;
 
-typedef std::forward_list<NeomasterModuleUI *> ui_module_list_t;
+	class NeomasterModule {
+	public:
+		virtual NeomasterModuleUI *get_ui_module() = 0;
+	};
 
-class NeomasterModule {
-public:
-	virtual NeomasterModuleUI *get_ui_module() = 0;
-};
+	typedef std::forward_list<NeomasterModule *> module_list_t;
 
-typedef std::forward_list<NeomasterModule *> module_list_t;
-
-class ModuleManager {
-public:
-	ModuleManager();
-	module_list_t module_list;
-};
+	class Manager {
+	public:
+		Manager();
+		module_list_t module_list;
+	};
 
 
+}
 #endif

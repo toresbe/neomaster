@@ -50,11 +50,11 @@ namespace Panel {
 		this->bs5_state.button_right = msg.buttons && 0x10;
 	}
 
-	Input::bs5_damage_t USBDevice::read_status(void) {
+	Panel::input_damage_t USBDevice::read_status(void) {
 		// read status, update internal state, and return a message
 		// FIXME: Will not return correct damage map!
 		bs5_message_t msg;
-		Input::bs5_damage_t damage;
+		Panel::input_damage_t damage;
 		int actual_length;
 		int r = libusb_interrupt_transfer(this->device_handle, 0x81 /*LIBUSB_ENDPOINT_IN*/, (unsigned char *)&msg, sizeof(msg), &actual_length, 0);
 		assert(actual_length == 6);

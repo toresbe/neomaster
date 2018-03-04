@@ -3,6 +3,11 @@
 #include "gui.hpp"
 #include <map>
 #include <string>
+#define BOOST_THREAD_PROVIDES_FUTURE
+#include <boost/thread.hpp>
+#include <boost/thread/future.hpp>
+#include <boost/log/trivial.hpp>
+#include <boost/thread/thread.hpp>
 
 #ifdef _WIN64
 #include "SDL.h"
@@ -50,7 +55,7 @@ bool NeomasterUI::sdl_init()
     return success;
 }
 
-NeomasterUI::NeomasterUI(module_list_t & module_list) {
+NeomasterUI::NeomasterUI(Modules::module_list_t & module_list) {
 	sdl_init();
 	for (auto module : module_list) {
 		if (module->get_ui_module() != nullptr) {
@@ -58,12 +63,12 @@ NeomasterUI::NeomasterUI(module_list_t & module_list) {
 			this->ui_module_list.push_front(module->get_ui_module());
 		}
 	}
-	this->module_wheel = new ModuleWheel(this->renderer, this->ui_module_list);
+	this->module_wheel = new GUI::ModuleWheel(this->renderer, this->ui_module_list);
 
 	draw();
 }
 
-void NeomasterUI::handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state) {
+void NeomasterUI::handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state) {
 	if (damage.wheel_3) {
 		this->module_wheel->handle_panel_input(damage, state);
 	}
@@ -95,3 +100,42 @@ void NeomasterUI::add_widget(Widget::NMWidget * widget) {
 		widget->draw();
 	}
 }*/
+
+
+bool NeomasterUI::register_module(Modules::NeomasterModule *module) {
+	this->modules.push_front(module);
+	BOOST_LOG_TRIVIAL(info) << "UI registering module: " << module->get_ui_module()->label;
+	return true;
+}
+
+void NeomasterUI::start_gui() {
+	// If the real panel doesn't work, we just use a dummy panel that feeds various inputs.
+	try {
+		this->panel = new Panel::USBDevice();
+	}
+	catch (std::exception & e) {
+		BOOST_LOG_TRIVIAL(warning) << "Could not connect to BS5 panel! Using fake panel.";
+		this->panel = new Panel::FakeDevice();
+	}
+	this->panel->set_backlight(true);
+}
+
+void NeomasterUI::event_loop() {
+	this->draw();
+	Panel::input_damage_t damage;
+	while (this->running) {
+		boost::packaged_task<Panel::input_damage_t> pt(std::bind(&Panel::Device::read_status, this->panel));
+		boost::future<Panel::input_damage_t> fi1 = pt.get_future();
+		boost::thread task(boost::move(pt));
+
+		SDL_Event event;
+		if (SDL_PollEvent(&event) && event.type == SDL_QUIT)
+			break;
+
+		boost::wait_for_any(fi1);
+		if (fi1.is_ready()) {
+			damage = fi1.get();
+			handle_panel_input(damage, this->panel->input.bs5_state);
+		}
+	}
+}

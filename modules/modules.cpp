@@ -4,14 +4,16 @@
 #include <iostream>
 #include <boost/log/trivial.hpp>
 
-ModuleManager::ModuleManager() {
-	this->module_list.push_front(new TestModule);
-	this->module_list.push_front(new TestModule);
-	this->module_list.push_front(new TestModule);
-}
+namespace Modules {
+	Manager::Manager() {
+		this->module_list.push_front(new Modules::Test::Module);
+		this->module_list.push_front(new Modules::Test::Module);
+		this->module_list.push_front(new Modules::Test::Module);
+	}
 
-void NeomasterModuleUI::attach_ui(NeomasterUI * ui)
-{
-	this->ui = ui;
-	this->initialize();
+	void NeomasterModuleUI::attach_ui(NeomasterUI * ui)
+	{
+		this->ui = ui;
+		this->initialize();
+	}
 }
