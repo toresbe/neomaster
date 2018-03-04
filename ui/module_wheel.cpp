@@ -27,7 +27,7 @@ typedef struct module_bitmap_entry_t {
 std::forward_list<module_bitmap_entry_t> module_bitmap_list;
 
 NeomasterModuleUI *ModuleWheel::new_selected_module(int posWheel3) {
-	int x = (this->input_state.posWheel3 / 127.0) * (SCREEN_HEIGHT + 200) - 100;
+	int x = (1.0 - (this->input_state.posWheel3 / 127.0)) * (SCREEN_HEIGHT + 200) - 100;
 	for (auto bitmap : module_bitmap_list) {
 		if (
 			(x >= bitmap.top) &&
@@ -107,7 +107,7 @@ SDL_Rect ModuleWheel::get_rekt(int num_modules, int module_index) {
 
 void ModuleWheel::render_beam() {
 	int x1, y1, x2, y2;
-	y1 = (this->input_state.posWheel3 / 127.0) * (SCREEN_HEIGHT + 200) - 100;
+	y1 = (1.0 - (this->input_state.posWheel3 / 127.0)) * (SCREEN_HEIGHT + 200) - 100;
 	x1 = 0;
 	y2 = SCREEN_HEIGHT / 2;
 	x2 = SCREEN_WIDTH;
