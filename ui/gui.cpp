@@ -67,6 +67,9 @@ void NeomasterUI::handle_panel_input(const BS5input::bs5_damage_t & damage, cons
 	if (damage.wheel_3) {
 		this->module_wheel->handle_panel_input(damage, state);
 	}
+	if (this->module_wheel->selected_module != nullptr) {
+		this->module_wheel->selected_module->handle_panel_input(damage, state);
+	}
 	this->draw();
 }
 

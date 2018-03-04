@@ -19,7 +19,7 @@ class NeomasterUI;
 
 class NMWidget {
 public:
-	virtual	 void draw() = 0;
+	virtual	void draw() = 0;
 protected:
 	NeomasterUI * ui = nullptr;
 };

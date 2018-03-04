@@ -110,7 +110,7 @@ void ModuleWheel::render_beam() {
 	y1 = (1.0 - (this->input_state.posWheel3 / 127.0)) * (SCREEN_HEIGHT + 200) - 100;
 	x1 = 0;
 	y2 = SCREEN_HEIGHT / 2;
-	x2 = SCREEN_WIDTH;
+	x2 = SCREEN_WIDTH + 200;
 	SDL_SetRenderDrawColor(this->renderer, 255, 255, 255, 50);
 	SDL_RenderDrawLine(this->renderer, x1, y1, x2, y2);
 }
@@ -132,8 +132,8 @@ void ModuleWheel::handle_panel_input(const BS5input::bs5_damage_t & damage, cons
 
 void ModuleWheel::add_module_bitmap_entry(NeomasterModuleUI *module, const SDL_Rect &rect) {
 	module_bitmap_entry_t entry;
-	entry.top = rect.x;
-	entry.bottom = rect.x + this->font_line_height;
+	entry.top = rect.y;
+	entry.bottom = rect.y + this->font_line_height;
 	entry.module = module;
 	module_bitmap_list.push_front(entry);
 }

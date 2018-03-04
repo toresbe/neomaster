@@ -13,6 +13,8 @@ public:
 	void initialize();
 	void show();
 	void draw();
+	void handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state);
+	int active_color = 0;
 	std::list<NMWidget *> widget_list;
 	NMProgressBar *bar;
 	float value = 0;
