@@ -8,17 +8,15 @@
 #include <boost/log/trivial.hpp>
 #include <boost/thread/thread.hpp>
 
-UI::UI() {
-};
 
-bool UI::register_ui_module(const UI_module &module) {
+bool UI::register_module(NeomasterModule *module) {
     this->modules.push_front(module);
-    BOOST_LOG_TRIVIAL(info) << "UI registering module: " << module.label;
+    BOOST_LOG_TRIVIAL(info) << "UI registering module: " << module->get_ui_module()->label;
     return true;
 }
 
 void UI::start_gui() {
-    this->gui = new BS5gui(this->modules);
+    this->gui = new NeomasterUI(this->modules);
 	// If the real panel doesn't work, we just use a dummy panel that feeds various inputs.
     try {
         this->panel = new USBBS5panel();
@@ -31,7 +29,7 @@ void UI::start_gui() {
 }
 
 void UI::event_loop() {
-	this->gui->render();
+	this->gui->draw();
 	BS5input::bs5_damage_t damage;
     while (this->running) {
 		boost::packaged_task<BS5input::bs5_damage_t> pt(std::bind(&BS5panel::read_status, this->panel));

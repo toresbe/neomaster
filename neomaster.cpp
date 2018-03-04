@@ -6,8 +6,8 @@
 int main(int argc, char *argv[]) {
     UI ui;
     ModuleManager manager;
-    for( auto module: manager.get_ui_modules() ) 
-        ui.register_ui_module(module);
+    for( auto module: manager.module_list ) 
+        ui.register_module(module);
     ui.start_gui();
     boost::thread ui_thread(boost::bind(&UI::event_loop, &ui));
 

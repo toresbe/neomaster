@@ -4,6 +4,7 @@
 #include <map>
 #include <string>
 #include <cmath>
+#include "ui/module_wheel.hpp"
 
 #ifdef _WIN64
 #include "SDL.h"
@@ -44,6 +45,8 @@ void ModuleWheel::render_background() {
 	SDL_RenderCopy(this->renderer, background_texture, NULL, NULL);
 }
 
+//FIXME: This function and its associated data types will need to not only deal with
+// one single surface, but a pair of textures, with and without hilight.
 void ModuleWheel::render_text(const std::string & text, SDL_Rect rect) {
 	SDL_Texture *text_texture;
 	SDL_Surface *text_surface;
@@ -113,27 +116,26 @@ void ModuleWheel::render_modules()
 	for (auto module : this->module_list) num_modules++;
 
 	for (auto module : this->module_list) {
-		render_text(module.label, get_rekt(num_modules, module_index++));
+		render_text(module->label, get_rekt(num_modules, module_index++));
 	}
 }
 
 void ModuleWheel::render() {
-	SDL_SetRenderDrawColor(this->renderer, this->bg_color.r, this->bg_color.b, this->bg_color.g, 255);
-	SDL_RenderClear(this->renderer);
+	//SDL_SetRenderDrawColor(this->renderer, this->bg_color.r, this->bg_color.b, this->bg_color.g, 255);
+	//SDL_RenderClear(this->renderer);
 	render_background();
 	render_modules();
 	render_beam();
-	SDL_RenderPresent(this->renderer);
 }
 
-ModuleWheel::ModuleWheel(SDL_Window * window, ui_module_list_t module_list) {
+ModuleWheel::ModuleWheel(SDL_Renderer * renderer, ui_module_list_t module_list) {
 	this->module_list = module_list;
 	this->font = TTF_OpenFont("fonts/FreeSansBold.ttf", 28);
 	if (!this->font) {
 		printf("TTF_OpenFont: %s\n", TTF_GetError());
 		// handle error
 	}
-	this->renderer = SDL_CreateRenderer(window, -1, 0);
+	this->renderer = renderer;
 	this->font_line_height = TTF_FontLineSkip(this->font);
 
 	//Initialize PNG loading

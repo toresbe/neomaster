@@ -5,25 +5,48 @@
 #include <forward_list>
 #include <string>
 
-class UI_module {
-    public:
-        std::string label;
-		std::string description;
+
+#ifdef _WIN64
+#include "SDL.h"
+#include "SDL_ttf.h"
+#else
+#include "SDL2/SDL.h"
+#include "SDL2/SDL_ttf.h"
+#endif
+
+class NeomasterUI;
+
+class NeomasterModuleUI {
+public:
+	virtual void show() = 0;
+	virtual void initialize() = 0;
+	virtual void draw() = 0;
+	void attach_ui(NeomasterUI * ui);
+	std::string label;
+	std::string description;
+	NeomasterUI * ui;
+protected:
+	/*
+	
+	virtual void moduleDeselected() = 0;
+	virtual void panel_event() = 0;
+	*/
 };
 
-typedef std::forward_list<UI_module> ui_module_list_t;
+typedef std::forward_list<NeomasterModuleUI *> ui_module_list_t;
 
 class NeomasterModule {
     public:
-        UI_module *ui_module = nullptr;
+		virtual NeomasterModuleUI *get_ui_module() = 0;
 };
 
-typedef std::forward_list<NeomasterModule> module_list_t;
+typedef std::forward_list<NeomasterModule *> module_list_t;
 
 class ModuleManager {
     public:
         ModuleManager();
         module_list_t module_list;
-        ui_module_list_t get_ui_modules();
 };
+
+
 #endif

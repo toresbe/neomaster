@@ -124,13 +124,16 @@
     <ClCompile Include="ui\module_wheel.cpp" />
     <ClCompile Include="ui\panel.cpp" />
     <ClCompile Include="ui\ui.cpp" />
+    <ClCompile Include="ui\widgets.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="modules\modules.hpp" />
     <ClInclude Include="modules\test.hpp" />
     <ClInclude Include="ui\gui.hpp" />
+    <ClInclude Include="ui\module_wheel.hpp" />
     <ClInclude Include="ui\panel.hpp" />
     <ClInclude Include="ui\ui.hpp" />
+    <ClInclude Include="ui\widgets.hpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Makefile" />

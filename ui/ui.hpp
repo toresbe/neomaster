@@ -9,14 +9,13 @@
 
 class UI {
     public:
-        UI();
         void event_loop();
-        bool register_ui_module(const UI_module &module);
+        bool register_module(NeomasterModule *module);
         void start_gui();
     private:
-        ui_module_list_t modules{};
+        module_list_t modules{};
         BS5panel    *panel;
-        BS5gui      *gui;
+        NeomasterUI      *gui;
         bool running = true;
 };
 #endif

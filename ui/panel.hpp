@@ -18,8 +18,6 @@ typedef struct bs5_message_t {
 	uint8_t b6;
 } bs5_message_t;
 
-
-
 typedef boost::error_info<struct tag_bs5_panel_exception_info, std::string> bs5_panel_exception_info;
 struct bs5_panel_exception: virtual boost::exception, virtual std::exception { };
 

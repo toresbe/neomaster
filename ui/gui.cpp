@@ -12,7 +12,7 @@
 #include "SDL2/SDL_ttf.h"
 #endif
 
-bool BS5gui::sdl_init()
+bool NeomasterUI::sdl_init()
 {
     //Initialization flag
     bool success = true;
@@ -45,36 +45,46 @@ bool BS5gui::sdl_init()
         }
     }
 
+	this->renderer = SDL_CreateRenderer(this->window, -1, 0);
+
     return success;
 }
 
-BS5gui::BS5gui(ui_module_list_t & ui_module_list) {
+NeomasterUI::NeomasterUI(module_list_t & module_list) {
     sdl_init();
-    this->module_wheel = new ModuleWheel(this->window, ui_module_list);
-    render();
+	for (auto module: module_list) {
+		if (module->get_ui_module() != nullptr) {
+			module->get_ui_module()->attach_ui(this);
+			this->ui_module_list.push_front(module->get_ui_module());
+		}
+	}
+    this->module_wheel = new ModuleWheel(this->renderer, this->ui_module_list);
+	this->active_module = *this->ui_module_list.begin();
+	this->active_module->show();
+    draw();
 }
 
-void BS5gui::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state) {
+void NeomasterUI::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state) {
 	if (damage.wheel_3) {
 		this->module_wheel->handle_panel_input(damage, state);
+		//this->module_wheel
 	}
-	this->render();
+	this->draw();
 }
 
-void BS5gui::render() {
-    //BOOST_LOG_TRIVIAL(debug) << "Rendering frame";
-	if (this->panel != nullptr) {
-		this->module_wheel->bg_color = {
-			(uint8_t)(this->panel->input.bs5_state.posWheel1 % 255),
-			(uint8_t)(this->panel->input.bs5_state.posWheel2 % 255),
-			(uint8_t)(this->panel->input.bs5_state.posWheel3),
-					(uint8_t)255 };
-	} else {
-		this->module_wheel->bg_color = {0xff, 0xf0, 0x0f, 0xff};
-	}
-    this->module_wheel->render();
-    for(auto layer: this->layer_list) {
-//        SDL_BlitSurface(*layer, 0, this->window_surface, 0);
-    }
-    //SDL_UpdateWindowSurface(this->window);
+void NeomasterUI::draw() {
+	this->active_module->draw();
+	this->module_wheel->render();
+	SDL_RenderPresent(this->renderer);
 }
+
+
+void NeomasterUI::add_widget(NMWidget * widget) {
+	this->widget_list.push_back(widget);
+}
+
+/*void NeomasterUI::draw() {
+	for (NMWidget *widget : widget_list) {
+		widget->draw();
+	}
+}*/
