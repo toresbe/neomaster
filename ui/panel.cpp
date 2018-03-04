@@ -64,7 +64,12 @@ BS5input::bs5_damage_t USBBS5panel::read_status(void) {
             msg.wheel_1 ? true : false,
             msg.wheel_2 ? true : false,
             (msg.wheel_3 != this->input.bs5_state.posWheel3) ? true : false,
-            false };
+			(
+				(this->input.bs5_state.button_ok != msg.buttons && 0x40) || 
+				(this->input.bs5_state.button_left != msg.buttons && 0x20) ||
+				(this->input.bs5_state.button_right != msg.buttons && 0x10)
+			)
+		};
         this->input.parse_message(msg);
     } else {
 	std::cout << "Eek: " << r << std::strerror(errno) << std::endl;
