@@ -43,11 +43,6 @@ bool NeomasterUI::sdl_init()
             printf( "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
             success = false;
         }
-        else
-        {
-            //Get window surface
-            this->window_surface = SDL_GetWindowSurface( this->window );
-        }
     }
 
 	this->renderer = SDL_CreateRenderer(this->window, -1, 0);
@@ -90,11 +85,6 @@ void NeomasterUI::draw() {
 	SDL_RenderPresent(this->renderer);
 }
 
-bool NeomasterUI::register_module(Modules::NeomasterModule *module) {
-	this->modules.push_front(module);
-	BOOST_LOG_TRIVIAL(info) << "UI registering module: " << module->get_ui_module()->label;
-	return true;
-}
 
 void NeomasterUI::start_gui() {
 	// If the real panel doesn't work, we just use a dummy panel that feeds various inputs.

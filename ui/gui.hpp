@@ -22,10 +22,9 @@ typedef std::list<Widget::NMWidget *> widget_list_t;
 
 class NeomasterUI {
 public:
-	void event_loop();
-	bool register_module(Modules::NeomasterModule *module);
-	void start_gui();
 	NeomasterUI(Modules::module_list_t & module_list);
+	void event_loop();
+	void start_gui();
 	void handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state);
 	Panel::Device *panel = nullptr;
     void draw();
@@ -37,8 +36,6 @@ private:
 	GUI::ModuleWheel* module_wheel;
 	bool sdl_init();
 	SDL_Window* window;
-	SDL_Surface* window_surface;
-	std::forward_list<SDL_Surface **> layer_list;
 	Modules::module_list_t modules{};
 	bool running = true;
 };
