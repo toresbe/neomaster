@@ -20,12 +20,7 @@ namespace GUI {
 	typedef std::pair<SDL_Texture *, SDL_Rect> text_texture_t; // convert to struct to enable with/without hilight
 	std::map<std::string, text_texture_t> text_texture_map; // this could be specialised to automatically free surfaces
 	SDL_Texture * background_texture = nullptr;
-	typedef struct module_bitmap_entry_t {
-		int top;
-		int bottom;
-		Modules::NeomasterModuleUI *module;
-	} module_bitmap_entry_t;
-	std::forward_list<module_bitmap_entry_t> module_bitmap_list;
+
 
 	Modules::NeomasterModuleUI *ModuleWheel::new_selected_module(int posWheel3) {
 		int x = (1.0 - (this->input_state.posWheel3 / 127.0)) * (SCREEN_HEIGHT + 200) - 100;
