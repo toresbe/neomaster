@@ -90,18 +90,6 @@ void NeomasterUI::draw() {
 	SDL_RenderPresent(this->renderer);
 }
 
-
-void NeomasterUI::add_widget(Widget::NMWidget * widget) {
-	this->widget_list.push_back(widget);
-}
-
-/*void NeomasterUI::draw() {
-	for (NMWidget *widget : widget_list) {
-		widget->draw();
-	}
-}*/
-
-
 bool NeomasterUI::register_module(Modules::NeomasterModule *module) {
 	this->modules.push_front(module);
 	BOOST_LOG_TRIVIAL(info) << "UI registering module: " << module->get_ui_module()->label;

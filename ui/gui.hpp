@@ -18,6 +18,8 @@
 #include "panel.hpp"
 #include "module_wheel.hpp"
 namespace Widget { class NMWidget; };
+typedef std::list<Widget::NMWidget *> widget_list_t;
+
 class NeomasterUI {
 public:
 	void event_loop();
@@ -26,10 +28,8 @@ public:
 	NeomasterUI(Modules::module_list_t & module_list);
 	void handle_panel_input(const Panel::input_damage_t & damage, const Panel::input_state_t & state);
 	Panel::Device *panel = nullptr;
-	void add_widget(Widget::NMWidget *widget);
     void draw();
     SDL_Renderer * renderer;
-    typedef std::list<Widget::NMWidget *> widget_list_t;
 	Modules::ui_module_list_t ui_module_list;
     widget_list_t	widget_list;
 private:
