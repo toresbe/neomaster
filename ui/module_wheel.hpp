@@ -26,6 +26,13 @@ namespace GUI {
 		SDL_Color fg_color = { 255, 255, 255, 255 };
 		SDL_Color bg_color = { 255, 255, 255, 255 };
 	private:
+		typedef struct module_bitmap_entry_t {
+			int top;
+			int bottom;
+			Modules::NeomasterModuleUI *module;
+		} module_bitmap_entry_t;
+		std::forward_list<module_bitmap_entry_t> module_bitmap_list;
+
 		Panel::input_state_t input_state;
 		SDL_Renderer * renderer;
 		void render_text(const std::string & text, SDL_Rect rect);
