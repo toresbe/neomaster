@@ -4,30 +4,30 @@
 #include <boost/thread/thread.hpp>
 #include <chrono>
 
-
-void FakeBS5panel::set_backlight(bool is_powered)
+namespace Panel{
+void FakeDevice::set_backlight(bool is_powered)
 {
 }
 
-void FakeBS5panel::click()
+void FakeDevice::click()
 {
 }
 
-BS5input::bs5_damage_t FakeBS5panel::read_status()
+Input::bs5_damage_t FakeDevice::read_status()
 {
-	BS5input::bs5_damage_t d = { false, false, false, false };
+	Panel::Input::bs5_damage_t d = { false, false, false, false };
 	bs5_message_t x = { 0,0,0,0,0,0 };
 	boost::this_thread::sleep_for((boost::chrono::milliseconds)1);
 	switch (this->phase) {
 	case 0:
 		this->phase = 4;
 		break;
-		x.wheel_1+=2;
+		x.wheel_1 += 2;
 		d.wheel_1 = true;
 		if (this->input.bs5_state.posWheel1 >= 1000) this->phase++;
 		break;
 	case 1:
-		x.wheel_1-=2;
+		x.wheel_1 -= 2;
 		d.wheel_1 = true;
 		if (this->input.bs5_state.posWheel1 <= 0) this->phase++;
 		break;
@@ -48,7 +48,7 @@ BS5input::bs5_damage_t FakeBS5panel::read_status()
 		break;
 	case 5:
 		d.wheel_3 = true;
-		if (this->input.bs5_state.posWheel3 <= 1) 
+		if (this->input.bs5_state.posWheel3 <= 1)
 			this->phase = 4;
 		x.wheel_3 = this->input.bs5_state.posWheel3 - 1;
 		break;
@@ -59,4 +59,5 @@ BS5input::bs5_damage_t FakeBS5panel::read_status()
 	}
 	this->input.parse_message(x);
 	return d;
+}
 }

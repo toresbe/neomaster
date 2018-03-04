@@ -115,7 +115,7 @@ void ModuleWheel::render_beam() {
 	SDL_RenderDrawLine(this->renderer, x1, y1, x2, y2);
 }
 
-void ModuleWheel::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state) {
+void ModuleWheel::handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state) {
 	if (damage.wheel_3)
 	{
 		this->input_state = state;

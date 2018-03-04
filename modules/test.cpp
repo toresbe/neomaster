@@ -11,13 +11,13 @@
 #include "ui/panel.hpp"
 
 typedef struct test_rgb { uint8_t r; uint8_t g; uint8_t b; } test_rgb;
+
 std::array<test_rgb, 4> color_list = {
 	test_rgb{ 218,165,32 },
 	test_rgb{ 184,134,11 },
 	test_rgb{ 124,252,0 },
 	test_rgb{ 186,85,211 },
 };
-
 
 TestModuleUI::TestModuleUI() {
 	this->description = "Test module";
@@ -27,7 +27,7 @@ TestModuleUI::TestModuleUI() {
 }
 
 void TestModuleUI::initialize() {
-	this->bar = new NMProgressBar(this->ui, 200, 400, 150, 40);
+	this->bar = new Widget::NMProgressBar(this->ui, 200, 400, 150, 40);
 	this->widget_list.push_front(bar);
 }
 
@@ -49,7 +49,7 @@ void TestModuleUI::draw()
 	}
 }
 
-void TestModuleUI::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state)
+void TestModuleUI::handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state)
 {
 	if(damage.buttons)
 		if (state.button_right) {

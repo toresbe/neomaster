@@ -17,17 +17,16 @@
 #include "ui/widgets.hpp"
 #include "panel.hpp"
 #include "module_wheel.hpp"
-
-class NMWidget;
+namespace Widget { class NMWidget; };
 class NeomasterUI {
 public:
 	NeomasterUI(module_list_t & module_list);
-	void handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state);
-	BS5panel *panel = nullptr;
-	void add_widget(NMWidget *widget);
+	void handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state);
+	Panel::Device *panel = nullptr;
+	void add_widget(Widget::NMWidget *widget);
     void draw();
     SDL_Renderer * renderer;
-    typedef std::list<NMWidget *> widget_list_t;
+    typedef std::list<Widget::NMWidget *> widget_list_t;
 	ui_module_list_t ui_module_list;
     widget_list_t	widget_list;
 private:

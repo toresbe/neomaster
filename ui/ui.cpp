@@ -19,10 +19,10 @@ void UI::start_gui() {
     this->gui = new NeomasterUI(this->modules);
 	// If the real panel doesn't work, we just use a dummy panel that feeds various inputs.
     try {
-        this->panel = new USBBS5panel();
+        this->panel = new Panel::USBDevice();
     } catch (std::exception & e) {
 		BOOST_LOG_TRIVIAL(warning) << "Could not connect to BS5 panel! Using fake panel.";
-		this->panel = new FakeBS5panel();
+		this->panel = new Panel::FakeDevice();
     }
 	this->panel->set_backlight(true);
 	this->gui->panel = this->panel;
@@ -30,10 +30,10 @@ void UI::start_gui() {
 
 void UI::event_loop() {
 	this->gui->draw();
-	BS5input::bs5_damage_t damage;
+	Panel::Input::bs5_damage_t damage;
     while (this->running) {
-		boost::packaged_task<BS5input::bs5_damage_t> pt(std::bind(&BS5panel::read_status, this->panel));
-		boost::future<BS5input::bs5_damage_t> fi1 = pt.get_future();
+		boost::packaged_task<Panel::Input::bs5_damage_t> pt(std::bind(&Panel::Device::read_status, this->panel));
+		boost::future<Panel::Input::bs5_damage_t> fi1 = pt.get_future();
 		boost::thread task(boost::move(pt));
 		
 		SDL_Event event;

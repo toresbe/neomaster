@@ -19,13 +19,13 @@ public:
 	void render_background();
 	ModuleWheel(SDL_Renderer * renderer, ui_module_list_t module_list);
 	void render();
-	void handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state);
+	void handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state);
 	void add_module_bitmap_entry(NeomasterModuleUI * module, const SDL_Rect & rect);
 	NeomasterModuleUI * selected_module;
 	SDL_Color fg_color = { 255, 255, 255, 255 };
 	SDL_Color bg_color = { 255, 255, 255, 255 };
 private:
-	BS5input::bs5_state_t input_state;
+	Panel::Input::bs5_state_t input_state;
 	SDL_Renderer * renderer;
 	void render_text(const std::string & text, SDL_Rect rect);
 	void render_modules();

@@ -63,7 +63,7 @@ NeomasterUI::NeomasterUI(module_list_t & module_list) {
 	draw();
 }
 
-void NeomasterUI::handle_panel_input(const BS5input::bs5_damage_t & damage, const BS5input::bs5_state_t & state) {
+void NeomasterUI::handle_panel_input(const Panel::Input::bs5_damage_t & damage, const Panel::Input::bs5_state_t & state) {
 	if (damage.wheel_3) {
 		this->module_wheel->handle_panel_input(damage, state);
 	}
@@ -86,7 +86,7 @@ void NeomasterUI::draw() {
 }
 
 
-void NeomasterUI::add_widget(NMWidget * widget) {
+void NeomasterUI::add_widget(Widget::NMWidget * widget) {
 	this->widget_list.push_back(widget);
 }
 

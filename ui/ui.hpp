@@ -14,7 +14,7 @@ class UI {
         void start_gui();
     private:
         module_list_t modules{};
-        BS5panel    *panel;
+        Panel::Device    *panel;
         NeomasterUI      *gui;
         bool running = true;
 };
