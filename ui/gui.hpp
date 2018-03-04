@@ -32,7 +32,7 @@ public:
 	Modules::ui_module_list_t ui_module_list;
     widget_list_t	widget_list;
 private:
-	Modules::NeomasterModuleUI * active_module;
+	Modules::NeomasterModuleUI * active_module;		// Currently selected NeomasterModuleUI
 	GUI::ModuleWheel* module_wheel;
 	bool sdl_init();
 	SDL_Window* window;
