@@ -1,6 +1,6 @@
 #include <boost/thread.hpp>
 #include "modules/modules.hpp"
-#include "ui/ui.hpp"
+#include "ui/gui.hpp"
 #include "SDL.h"
 
 int main(int argc, char *argv[]) {    

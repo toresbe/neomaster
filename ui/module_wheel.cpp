@@ -1,5 +1,4 @@
 #include <boost/log/trivial.hpp>
-#include "ui.hpp"
 #include "gui.hpp"
 #include <map>
 #include <string>

@@ -3,7 +3,7 @@
 #define TEST_HPP
 
 #include "modules/modules.hpp"
-#include "../ui/ui.hpp"
+#include "ui/gui.hpp"
 #include <string>
 #include <list>
 

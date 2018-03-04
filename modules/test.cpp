@@ -1,14 +1,11 @@
 #include <iostream>
 #include <string>
 #include <array>
-#include "ui/ui.hpp"
 #include "test.hpp"
 #include <boost/log/trivial.hpp>
 #include "modules/modules.hpp"
 #include "modules/test.hpp"
-#include "ui/widgets.hpp"
 #include "ui/gui.hpp"
-#include "ui/panel.hpp"
 
 namespace Modules {
 	namespace Test {
