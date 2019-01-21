@@ -9,7 +9,7 @@ class BM5PC2Interface: public PC2Interface {
         this->address_mask = PC2Interface::address_masks::promisc;
     }
     void beo4_press(uint8_t keycode) {
-        if (keycode == BEO4_KEY_TV) {
+        if (keycode == Beo4::keycode::tv) {
             this->pc2->device->send_telegram({ 0x24 });
             this->pc2->device->get_data(100); // expect 0x24 0x01
             this->pc2->device->send_telegram({ 0xe0, 0xc0, 0xc1, 0x01, 0x0b, 0x00, 0x00, \
