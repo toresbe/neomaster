@@ -1,0 +1,3 @@
+[submodule "libpc2"]
+	path = libpc2
+	url = git@github.com:toresbe/libpc2.git
