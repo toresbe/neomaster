@@ -16,7 +16,7 @@ include ( CheckIncludeFile )
 
 find_package ( PkgConfig )
 if ( PKG_CONFIG_FOUND )
-  pkg_check_modules ( PKGCONFIG_LIBUSB libusb )
+  pkg_check_modules ( PKGCONFIG_LIBUSB libusb-1.0 )
 endif ( PKG_CONFIG_FOUND )
 
 if ( PKGCONFIG_LIBUSB_FOUND )
