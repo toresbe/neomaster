@@ -1,7 +1,7 @@
 #include <boost/thread.hpp>
 #include "modules/modules.hpp"
 #include "ui/gui.hpp"
-#include "SDL.h"
+//#include "SDL.h"
 
 int main(int argc, char *argv[]) {    
     Modules::Manager manager;

@@ -1,0 +1,107 @@
+syntax = "proto3";
+
+package beosource;
+
+// For testing purposes
+message BogusEvent {
+}
+
+message KeyPress {
+    enum Beo4Code {
+        digit_0 = 0x00;
+        digit_1 = 0x01;
+        digit_2 = 0x02;
+        digit_3 = 0x03;
+        digit_4 = 0x04;
+        digit_5 = 0x05;
+        digit_6 = 0x06;
+        digit_7 = 0x07;
+        digit_8 = 0x08;
+        digit_9 = 0x09;
+        a_aux = 0x83;
+        arrow_down = 0x1f;
+        arrow_left = 0x32;
+        arrow_right = 0x34;
+        arrow_up = 0x1e;
+        a_tape = 0x91;
+        a_tape2 = 0x94;
+        av = 0xbf;
+        blue = 0xd8;
+        cd = 0x92;
+        go = 0x35;
+        green = 0xd5;
+        menu = 0x5c;
+        mute = 0x0d;
+        pc = 0x8b;
+        phono = 0x93;
+        picture = 0x45;
+        radio = 0x81;
+        record = 0x37;
+        red = 0xd9;
+        sat = 0x8a;
+        sat2 = 0x86;
+        sound = 0x44;
+        standby = 0x0c;
+        stop = 0x36;
+        store = 0x0b;
+        text = 0x88;
+        tv = 0x80;
+        vol_down = 0x64;
+        vol_up = 0x60;
+        v_aux = 0x82;
+        v_tape = 0x85;
+        yellow = 0xd4;
+        dummy = 0xff;
+    };
+    Beo4Code keycode = 1;
+    bool long_press = 2; 
+}
+
+message Source {
+    enum MLSource {
+        option allow_alias=true;
+        null = 0;
+        tv = 0x0b;
+        v_mem = 0x15;
+        v_tape = 0x15;
+        v_tape2 = 0x16;
+        dvd2 = 0x16;
+        dtv = 0x1f;
+        sat = 0x1f;
+        dvd = 0x29;
+        v_aux = 0x33;
+        dtv2 = 0x33;
+        v_aux2 = 0x3e;
+        doorcam = 0x3e;
+        pc = 0x47;
+        a_mem = 0x79;
+        a_tape = 0x79;
+        a_mem2 = 0x7a;
+        cd = 0x8d;
+        a_aux = 0x97; 
+        n_radio = 0xa1;
+        phono = 0xa1;
+        radio = 0x6f;
+    }
+}
+message SourceChange {
+    Source.MLSource new_source = 1;
+    Source.MLSource old_source = 2;
+}
+
+message Event {
+    oneof EventMessage {
+        KeyPress key_press = 1;
+        SourceChange source_change = 2;
+        BogusEvent bogus_event = 3;
+    }
+}
+
+message Response {
+    enum Codes {
+        ACK = 0;
+        NAK = 1;
+        NOP = 2;
+    }
+    Codes code = 1;
+}

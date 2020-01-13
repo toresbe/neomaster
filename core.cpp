@@ -2,6 +2,7 @@
 #include <boost/log/trivial.hpp>
 #include "libpc2/pc2/pc2.hpp"
 #include "libpc2/pc2/beo4.hpp"
+#include "beosource.pb.h"
 
 class BM5PC2Interface: public PC2Interface {
     public:
@@ -9,6 +10,7 @@ class BM5PC2Interface: public PC2Interface {
         this->address_mask = PC2Interface::address_mask_t::audio_master;
     }
     void beo4_press(Beo4::keycode keycode) {
+
         if (keycode == Beo4::keycode::tv) {
             // TODO: Use new API, don't send hard-coded hex anymore
             this->pc2->device->send_message({ 0x24 });
