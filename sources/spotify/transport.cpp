@@ -4,13 +4,16 @@
 static const char* TRANSLATE_SERVICE_NAME = "org.mpris.MediaPlayer2.spotify";
 static const char* TRANSLATE_OBJECT_PATH = "/org/mpris/MediaPlayer2";
 
-SpotifyTransport::SpotifyTransport(ISource *source) {
+SpotifyTransport::SpotifyTransport(SpotifySource *source)
+{
+    printf("Starting Spotify Transport at %p (source == %p)\n", this, source);
     this->source = source;
-    DBus::BusDispatcher dispatcher;
     DBus::default_dispatcher = &dispatcher;
-    DBus::Connection bus = DBus::Connection::SessionBus();
+    auto tmp_con = DBus::Connection::SessionBus();
+    bus = new DBus::Connection(tmp_con);
 
-    dbus = new SpotifyDBus(bus, TRANSLATE_OBJECT_PATH, TRANSLATE_SERVICE_NAME);
+
+    dbus = new SpotifyDBus(*bus, TRANSLATE_OBJECT_PATH, TRANSLATE_SERVICE_NAME);
 }
 
 void SpotifyTransport::stop() {

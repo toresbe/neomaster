@@ -11,10 +11,10 @@ class SpotifyEventHandler : public IEventHandler {
         beosource::Response handle_keypress(const beosource::Event & event);
         beosource::Response handle_source_change(const beosource::Event & event);
     protected:
-        ISource * source;
+        SpotifySource * source;
     public:
         beosource::Response handle(const beosource::Event & event);
-        SpotifyEventHandler(ISource *source);
+        SpotifyEventHandler(SpotifySource *source);
 };
 
 class SpotifySource: public ISource {
@@ -41,10 +41,12 @@ class SpotifyDBus
 
 class SpotifyTransport: public ITransport {
     protected:
-        ISource * source;
+        SpotifySource *source;
         SpotifyDBus *dbus;
+        DBus::BusDispatcher dispatcher;
+        DBus::Connection *bus;
     public:
-        SpotifyTransport(ISource *source);
+        SpotifyTransport(SpotifySource *source);
         ~SpotifyTransport();
         void play();
         void stop();

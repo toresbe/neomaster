@@ -6,7 +6,7 @@
 using ::testing::StrictGMock;
 
 GTEST(SpotifyEventHandler) {
-    ISource server;
+    SpotifySource server;
     server.masterlink_id = beosource::Source::a_mem;
     StrictGMock<INeomaster> mock_kernel;
     StrictGMock<ITransport> mock_transport;

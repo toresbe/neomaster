@@ -1,15 +1,40 @@
+#include "sources/spotify/spotify.hpp"
 #include <signal.h>
 #include <boost/log/trivial.hpp>
 #include "libpc2/pc2/pc2.hpp"
 #include "libpc2/pc2/beo4.hpp"
 #include "beosource.pb.h"
 
-class BM5PC2Interface: public PC2Interface {
+class BM5PC2Interface: public PC2Interface, public INeomaster {
     public:
-    BM5PC2Interface() {
+        SpotifySource spotify;
+
+    BM5PC2Interface() : spotify(this) {
         this->address_mask = PC2Interface::address_mask_t::audio_master;
+       
+         
+
     }
+
     void beo4_press(Beo4::keycode keycode) {
+        printf("In callback\n");
+        if (active_source == spotify.masterlink_id) {
+            printf("Forwarding event to Spotify");
+            beosource::Event NewEvent;
+            auto KeypressEvent = NewEvent.mutable_key_press();
+            KeypressEvent->set_keycode((beosource::KeyPress_Beo4Code)keycode);
+            spotify.events->handle(NewEvent);
+        } 
+        if (keycode == Beo4::keycode::cd) {
+            this->pc2->mixer->transmit_locally(true);
+            this->pc2->mixer->speaker_power(true);
+            beosource::Event NewEvent;
+            auto source_change = NewEvent.mutable_source_change();
+            source_change->set_old_source((beosource::Source_MLSource)active_source);
+            active_source = beosource::Source::a_mem;
+            source_change->set_new_source((beosource::Source_MLSource)active_source);
+            spotify.events->handle(NewEvent);
+        }
 
         if (keycode == Beo4::keycode::tv) {
             // TODO: Use new API, don't send hard-coded hex anymore

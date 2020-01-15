@@ -3,7 +3,7 @@
 #include "../sources.hpp"
 #include "spotify.hpp"
 
-SpotifyEventHandler::SpotifyEventHandler(ISource *source) {
+SpotifyEventHandler::SpotifyEventHandler(SpotifySource *source) {
     this->source = source;
 };
 
