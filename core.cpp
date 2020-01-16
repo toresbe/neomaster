@@ -22,6 +22,7 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         } 
 
         if (keycode == Beo4::keycode::cd) {
+            this->pc2->device->send_message({0xe4, 0x01});
             this->pc2->mixer->set_parameters(34, -1, 0, 0, false);
             this->pc2->mixer->transmit_locally(true);
             this->pc2->mixer->speaker_power(true);
