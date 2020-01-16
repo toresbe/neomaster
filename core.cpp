@@ -22,7 +22,7 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         } 
 
         if (keycode == Beo4::keycode::cd) {
-            this->pc2->mixer->set_parameters(34, -1, 0, false);
+            this->pc2->mixer->set_parameters(34, -1, 0, 0, false);
             this->pc2->mixer->transmit_locally(true);
             this->pc2->mixer->speaker_power(true);
 
@@ -48,7 +48,7 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
                     0x04, 0x03, 0x04, 0x01, 0x01, 0x01, 0xa4, 0x00});
             this->pc2->device->send_message({ 0xe0, 0xc0, 0xc1, 0x01, 0x14, 0x00, 0x00, 0x00, \
                     0x08, 0x00, 0x04, 0xa2, 0x00 });
-            this->pc2->mixer->set_parameters(34, -1, 0, false);
+            this->pc2->mixer->set_parameters(34, -1, 0, 0, false);
             this->pc2->mixer->transmit_from_ml(true);
             this->pc2->mixer->transmit_locally(false);
             this->pc2->mixer->speaker_power(true);
@@ -68,7 +68,7 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
             this->pc2->device->send_message({0xe0, 0xc0, 0xc1, 0x01, 0x0a, 0x00, 0x00, 0x00, 0x11, 0x02, 0x02, 0x01, 0x00, 0xa2, 0x00});
             this->pc2->device->send_message({0xe4, 0x01});
             this->pc2->mixer->ml_distribute(false);
-            this->pc2->mixer->transmitting_from_ml(false);
+            this->pc2->mixer->transmit_from_ml(false);
             this->pc2->mixer->transmit_locally(false);
             this->pc2->mixer->speaker_power(false);
         }

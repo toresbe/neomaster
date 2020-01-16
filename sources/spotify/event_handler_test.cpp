@@ -6,10 +6,10 @@
 using ::testing::StrictGMock;
 
 GTEST(SpotifyEventHandler) {
-    SpotifySource server;
+    SpotifySource server((INeomaster *)nullptr);
     server.masterlink_id = beosource::Source::a_mem;
     StrictGMock<INeomaster> mock_kernel;
-    StrictGMock<ITransport> mock_transport;
+    StrictGMock<SpotifyTransport> mock_transport;
     server.transport = object(mock_transport);
     server.kernel = object(mock_kernel);
     server.events = new SpotifyEventHandler(&server);
