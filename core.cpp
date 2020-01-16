@@ -11,28 +11,27 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
 
     BM5PC2Interface() : spotify(this) {
         this->address_mask = PC2Interface::address_mask_t::audio_master;
-       
-         
-
     }
 
     void beo4_press(Beo4::keycode keycode) {
-        printf("In callback\n");
         if (active_source == spotify.masterlink_id) {
-            printf("Forwarding event to Spotify");
             beosource::Event NewEvent;
             auto KeypressEvent = NewEvent.mutable_key_press();
             KeypressEvent->set_keycode((beosource::KeyPress_Beo4Code)keycode);
             spotify.events->handle(NewEvent);
         } 
+
         if (keycode == Beo4::keycode::cd) {
+            this->pc2->mixer->set_parameters(34, -1, 0, false);
             this->pc2->mixer->transmit_locally(true);
             this->pc2->mixer->speaker_power(true);
+
             beosource::Event NewEvent;
             auto source_change = NewEvent.mutable_source_change();
             source_change->set_old_source((beosource::Source_MLSource)active_source);
             active_source = beosource::Source::a_mem;
             source_change->set_new_source((beosource::Source_MLSource)active_source);
+
             spotify.events->handle(NewEvent);
         }
 
@@ -49,10 +48,11 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
                     0x04, 0x03, 0x04, 0x01, 0x01, 0x01, 0xa4, 0x00});
             this->pc2->device->send_message({ 0xe0, 0xc0, 0xc1, 0x01, 0x14, 0x00, 0x00, 0x00, \
                     0x08, 0x00, 0x04, 0xa2, 0x00 });
-            this->pc2->device->send_message({0xe3, 0xa2, 0xff, 0x00, 0x00});
-            this->pc2->device->send_message({0xe5, 0x04, 0x00, 0x00, 0x00});
-            this->pc2->device->send_message({0xe4, 0x01});
+            this->pc2->mixer->set_parameters(34, -1, 0, false);
+            this->pc2->mixer->transmit_from_ml(true);
+            this->pc2->mixer->transmit_locally(false);
             this->pc2->mixer->speaker_power(true);
+            this->pc2->device->send_message({0xe4, 0x01});
         }
         // Volume up
         else if (keycode == 0x60) {
@@ -67,8 +67,10 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
             this->pc2->device->send_message({0xe0, 0xc0, 0xc1, 0x01, 0x0b, 0x00, 0x00, 0x00, 0x04, 0x03, 0x04, 0x01, 0x01, 0x00, 0x9a, 0x00});
             this->pc2->device->send_message({0xe0, 0xc0, 0xc1, 0x01, 0x0a, 0x00, 0x00, 0x00, 0x11, 0x02, 0x02, 0x01, 0x00, 0xa2, 0x00});
             this->pc2->device->send_message({0xe4, 0x01});
+            this->pc2->mixer->ml_distribute(false);
+            this->pc2->mixer->transmitting_from_ml(false);
+            this->pc2->mixer->transmit_locally(false);
             this->pc2->mixer->speaker_power(false);
-            this->pc2->device->send_message({0xe5, 0x00, 0x00, 0x00, 0x01});
         }
     }
 };
