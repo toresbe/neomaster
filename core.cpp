@@ -10,6 +10,7 @@ class ConbeeInterface {
     private:
         const std::string token="automation";
         const std::string endpoint="housepi.local";
+        const std::string API_URL="http://" + endpoint + "/api/" + token;
 
         std::time_t light_mode_timeout = std::time(nullptr);
 
@@ -22,9 +23,9 @@ class ConbeeInterface {
         }
 
         void recall(Beo4::keycode keycode) {
-                http::Request request{ "http://housepi.local/api/automation/groups/5/scenes/" + std::to_string(keycode) + "/recall" };
-                const auto response = request.send("PUT");
-                light_mode_timeout = std::time(nullptr);
+            set_light_mode();
+            http::Request request{API_URL + "/groups/5/scenes/" + std::to_string(keycode) + "/recall" };
+            const auto response = request.send("PUT");
         }
     public:
         bool handle_keycode(Beo4::keycode keycode) {
@@ -34,11 +35,10 @@ class ConbeeInterface {
             }
 
             if(is_in_light_mode() && keycode <= 9) {
-                printf("Light command. \n");
                 recall(keycode);
                 return true;
-                printf("beo4_press keycode %02X\n", keycode);
             }
+
             return false;
         }
 };
