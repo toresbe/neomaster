@@ -3,17 +3,59 @@
 #include <boost/log/trivial.hpp>
 #include "libpc2/pc2/pc2.hpp"
 #include "libpc2/pc2/beo4.hpp"
+#include "HTTPRequest.hpp"
 #include "beosource.pb.h"
 
+class ConbeeInterface {
+    private:
+        const std::string token="automation";
+        const std::string endpoint="housepi.local";
+
+        std::time_t light_mode_timeout = std::time(nullptr);
+
+        bool is_in_light_mode() {
+            return (std::time(nullptr) - light_mode_timeout < 20);
+        }
+
+        void set_light_mode() {
+            light_mode_timeout = std::time(nullptr);
+        }
+
+        void recall(Beo4::keycode keycode) {
+                http::Request request{ "http://housepi.local/api/automation/groups/5/scenes/" + std::to_string(keycode) + "/recall" };
+                const auto response = request.send("PUT");
+                light_mode_timeout = std::time(nullptr);
+        }
+    public:
+        bool handle_keycode(Beo4::keycode keycode) {
+            if(keycode == Beo4::keycode::light) {
+                set_light_mode();
+                return true;
+            }
+
+            if(is_in_light_mode() && keycode <= 9) {
+                printf("Light command. \n");
+                recall(keycode);
+                return true;
+                printf("beo4_press keycode %02X\n", keycode);
+            }
+            return false;
+        }
+};
+
 class BM5PC2Interface: public PC2Interface, public INeomaster {
+    private:
     public:
         SpotifySource spotify;
+        ConbeeInterface light;
 
     BM5PC2Interface() : spotify(this) {
         this->address_mask = PC2Interface::address_mask_t::audio_master;
     }
 
     void beo4_press(Beo4::keycode keycode) {
+        if (light.handle_keycode(keycode)) return;
+
         if (active_source == spotify.masterlink_id) {
             beosource::Event NewEvent;
             auto KeypressEvent = NewEvent.mutable_key_press();
