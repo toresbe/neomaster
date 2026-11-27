@@ -37,11 +37,16 @@ pub struct SourceCenter {
     local_playback: bool,
     idle_status_pending: bool,
     idle_status_due: Time,
+    /// [`SourceCenter::all_standby`] waits for the PC2's bus lock grant until this deadline.
+    all_standby_due: Option<Time>,
 }
 
 impl SourceCenter {
     /// observed ~2 s
     pub const IDLE_STATUS_DELAY: Duration = Duration::from_millis(2000);
+    /// How long [`SourceCenter::all_standby`] waits for the bus lock (as `AudioMaster`'s firmware
+    /// lock mode).
+    pub const LOCK_TIMEOUT: Duration = Duration::from_millis(2000);
 
     pub fn new() -> Self {
         Self::default()
@@ -115,12 +120,64 @@ impl SourceCenter {
         Self::send_status_idle(host);
     }
 
-    /// Call periodically: the delayed idle status after a source is stopped.
+    /// Call periodically: the delayed idle status after a source is stopped, and the bus lock
+    /// timeout of [`SourceCenter::all_standby`].
     pub fn tick(&mut self, host: &mut dyn Host, now: Time) {
         if self.idle_status_pending && now >= self.idle_status_due {
             self.idle_status_pending = false;
             Self::send_status_idle(host);
         }
+        if self.all_standby_due.is_some_and(|due| now >= due) {
+            warn!("Source center: no bus lock grant (IN 44) from the PC2; sending all standby anyway");
+            self.send_all_standby(host, now);
+        }
+    }
+
+    /// When [`SourceCenter::tick`] next has something to do, if ever.
+    pub fn next_deadline(&self) -> Option<Time> {
+        let idle = self.idle_status_pending.then_some(self.idle_status_due);
+        [idle, self.all_standby_due].into_iter().flatten().min()
+    }
+
+    /// Long standby from this room (the panel's or a remote's "all off"): switch every node off.
+    ///
+    /// Inferred, not captured from a BM5 in this role: a link room does it as a lock round
+    /// (LOCK_MANAGER REQUEST to ALL, which the PC2 firmware runs for us after host command 24)
+    /// followed by `COMMAND STANDBY_1` subtype 1 to ALL with an empty payload (live sniffs: node
+    /// 04 `80 04 01 0a 00 00 00 11 00 01`, the audio master `80 c1 ...` the same). We send it
+    /// from our own address (PC_1), as every other telegram of ours, then stop our source as on
+    /// a received "all standby": the stopped status, then idle.
+    pub fn all_standby(&mut self, host: &mut dyn Host, now: Time) {
+        if self.all_standby_due.is_some() {
+            return;
+        }
+        self.all_standby_due = Some(now + Self::LOCK_TIMEOUT);
+        host.request_bus_lock();
+    }
+
+    /// The PC2 reported IN 44 01: the firmware holds the bus lock for us.
+    pub fn bus_lock_granted(&mut self, host: &mut dyn Host, now: Time) {
+        if self.all_standby_due.is_some() {
+            self.send_all_standby(host, now);
+        }
+    }
+
+    fn send_all_standby(&mut self, host: &mut dyn Host, now: Time) {
+        self.all_standby_due = None;
+        host.send_telegram(Self::make(
+            node::ALL,
+            tt::COMMAND,
+            pt::STANDBY_1,
+            ml::standby::SUBTYPE_1_ALL,
+            vec![],
+            0,
+            0,
+            node::SOURCE_CENTER,
+        ));
+        self.local_playback = false;
+        self.stop(host, Announce::Stopped, now);
+        // B&O releases right after its telegrams (e4 01) rather than waiting out the firmware's hold
+        host.release_bus_lock();
     }
 
     /// Something plays locally (e.g. picked on the panel). While set, stopping a link source does

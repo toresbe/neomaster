@@ -9,14 +9,14 @@ what exists and how to build it.
 | Crate | What it holds | State |
 |---|---|---|
 | `crates/masterlink` | Telegram codec, protocol constants, `AudioMaster` and `SourceCenter`, sans-IO | Ported from libpc2, capture replays pass |
-| `crates/pc2` | PC2 framing, fragment assembler, wake-up packets, telegram pacer, mixer, fan loop, start-up and dispatch, sans-IO | Ported from libpc2; USB adapter not written yet (M4) |
+| `crates/pc2` | PC2 framing, fragment assembler, wake-up packets, telegram pacer, mixer, fan loop, start-up and dispatch, sans-IO | Ported from libpc2; driven over USB by the binary's PC2 actor |
 | `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; USB adapter not written yet (M4) |
 | `crates/render` | Scene types, glyph rasterising (fontdue), XRender backend (x11rb) | Fills and text; covers come with M2 |
 | `crates/ui` | Pointer zones, views, navigation, animation; state in, scene out | List, cover arc (placeholder tiles), now-playing, context menu, volume, idle and blanking, on fake data |
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
-| `crates/neomaster` | The binary: core task, actors, `--sim` | Core loop and simulator run |
+| `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless` | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
 machine takes `now` as a `Duration` since a fixed epoch, so tests drive time directly.
@@ -26,7 +26,11 @@ machine takes `now` as a `Duration` since a fixed epoch, so tests drive time dir
 ```sh
 cargo test                       # all crates, on the host
 cargo run -p neomaster -- --sim  # the UI in a 1024x768 window; `--keys` lists the bindings
+cargo run -p neomaster -- --sim --role audio-master   # the same with the other Masterlink role
+neomaster --headless             # on the BM5: the Masterlink loop on the real PC2, no panel
 ```
+
+The workspace needs Rust 1.85 or newer (nusb).
 
 ### For the BeoMaster 5 (i686)
 
@@ -137,3 +141,50 @@ What neomaster does:
   On the BM5 the A.AUX input is a built-in PCM2902 (USB 08bb:2902, ALSA card `CODEC`) and card 0
   is the VIA VT1708 onboard audio (`hw:VT82xx,0`), so `default` already plays to it.
 - The DMR half is not replicated; Music Assistant covers network streams.
+
+## The Masterlink loop
+
+```text
+ PC2 (USB 0cd4:0101)                 PC2 actor (pc2_actor.rs)             core task (core.rs)
+ IN  ep 0x81, 9-byte packets ─────▶  pc2::Pc2: reassemble, fan loop ──▶  Event::Pc2(..) ──▶ Link (link.rs)
+ OUT ep 0x01            ◀───────────  pace ML telegrams, frame       ◀──  Pc2Cmd         ◀── AudioMaster or SourceCenter,
+                                      reopen every 2 s when gone                              PC2 Mixer, SourceMap
+```
+
+- **PC2 actor.** `open_usb` claims interface 0 with nusb and runs a reader (four IN transfers in
+  flight) and a writer task. `run_session` owns a fresh `pc2::Pc2` per connection: it sends the
+  start-up messages (F1, `80 <node> 00`, the F6 option for the role), feeds every IN packet to the
+  state machine, forwards the events to the core, and writes what the core and the pacer release.
+  `supervise` reopens the device every 2 s after it goes away and tells the core
+  (`Pc2Connected` / `Pc2Disconnected`), which restarts the role's announcements.
+- **Link** (sans-IO, like the protocol crates) owns the role's state machine and the mixer state,
+  and maps intents and PC2 events to `Pc2Cmd`s and `AppEffect`s (play, stop, source key, channel,
+  standby, volume). `Core::link_out` carries them out: `Play(AAux)` starts the A.AUX loop and any
+  other `Play` or `Stop` stops it; Music Assistant (N.MUSIC, N.RADIO) is not wired in yet and is
+  only logged. In the link source role A.AUX starts when the room's master connects us, since its
+  audio reaches the room over the link.
+- **Role.** `--role audio-master|link-source`, else `NEOMASTER_ML_ROLE` (the C++ neomaster's
+  variable; `source_center` works), else link source: it never arbitrates for the bus, so a
+  wrong default cannot disturb a link that has another audio master.
+
+| Intent | Audio master | Link source |
+|---|---|---|
+| Volume wheel | PC2 `eb` absolute volume | Beo4 VOL UP `0x60` / DOWN `0x64` to the room's master, one per 4 counts (the UI volume is re-centred after each turn) |
+| Pick a source | play it, `e3` tone + speakers on in B&O's order, `set_local_source` | its Beo4 key to the room's master (`0x94` N.MUSIC, `0x93` N.RADIO; A.AUX rides on N.MUSIC); play when the master connects us |
+| Short standby (S) | speakers off, then routing; `local_standby`; the player keeps going for link rooms still listening | Beo4 STANDBY `0x0c` to the room's master |
+| Long standby (Shift+S, held STANDBY on the remote) | `all_standby`: bus lock (`24` / IN 44 / `e4 01`), STANDBY_1 to ALL | the same from PC_1: `SourceCenter::all_standby` |
+| PC2 IR key | acted on: source keys, VOL, MUTE, STANDBY (held = long), TV (listen to the video master), anything else to the playing source | logged only; the room's master has its own eye |
+| Link room asks for our source | `AppEffect::Play` (`SourceMap::local_source`), SOURCE_CONTROL keys and channels to the player | the same, plus DISPLAY_DATA / METADATA after the connect replies (PR #10) |
+
+Inferred, not captured: the link source's long standby. No capture shows a BM5 in that role
+sending "all standby"; a link room does it as a lock round plus `80 <node> 01 0a 00 00 00 11 00 01`,
+so we send that from PC_1 (C2), our address for everything else.
+
+Tests (`crates/neomaster/src/link_tests.rs`, `pc2_actor.rs`): the PC2 state machine, `Link` and a
+simulated PC2 (`sim_pc2.rs`: answers ML telegrams with ML status, grants the bus lock, reports
+mixer changes, sends IR and telegrams split into 9-byte packets) replay the capture vectors of
+`crates/masterlink/tests/vectors` end to end: every window of both the 2018 audio master USB
+capture and the 2026 live source center captures, including the panel's own key telegrams at
+their captured moments. The actor test runs the async plumbing against the simulated PC2
+(start-up, pacing, reassembly, unplug, reopen, shutdown). `--sim` uses the simulated PC2 too, so
+the whole loop runs on a desktop; `--sim --usb` drives a real PC2 instead.

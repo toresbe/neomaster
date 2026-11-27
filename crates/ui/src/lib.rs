@@ -420,6 +420,22 @@ impl Ui {
         self.volume
     }
 
+    /// The volume as the PC2 reports it (or a neutral value where the room's master owns it).
+    /// Updates what the wheel turns from; emits nothing.
+    pub fn set_volume(&mut self, volume: u8) {
+        self.volume = volume.min(MAX_VOLUME);
+    }
+
+    /// Blank-screen standby now (the room went to standby): the backlight goes off until the
+    /// next input, as after the idle timeout.
+    pub fn blank(&mut self) -> Vec<Effect> {
+        if self.blanked {
+            return vec![];
+        }
+        self.blanked = true;
+        vec![Effect::Backlight(false)]
+    }
+
     fn animate(&mut self, now: Time) {
         let dt = self.last_frame.map(|t| now.saturating_sub(t).as_secs_f32()).unwrap_or(1.0).min(0.25);
         self.last_frame = Some(now);
