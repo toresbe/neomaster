@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 use tokio::time::sleep_until;
 
 use crate::core::Event;
+use crate::debug::{self, Tap};
 use crate::link::Pc2Cmd;
 
 /// Packets from the device and transfers to it. When the device goes away `rx` closes.
@@ -138,6 +139,8 @@ pub async fn run_session(
     let epoch = Instant::now();
     let now = || epoch.elapsed();
     let mut pc2 = pc2::Pc2::new(mode, node_address);
+    let tap = Tap::global();
+    tap.emit("pc2_session", || serde_json::json!({ "state": "open", "mode": format!("{mode:?}") }));
     // Commands queued while there was no device are stale (routing for a PC2 that rebooted).
     while cmds.try_recv().is_ok() {}
     pc2.init(now());
@@ -145,13 +148,14 @@ pub async fn run_session(
         return SessionEnd::Shutdown;
     }
     let end = loop {
-        if flush(&mut pc2, &usb.tx).await.is_err() {
+        if flush(&mut pc2, &usb.tx, &tap).await.is_err() {
             break SessionEnd::Gone;
         }
         let deadline = pc2.next_deadline().map(|d| tokio::time::Instant::from_std(epoch + d));
         tokio::select! {
             packet = usb.rx.recv() => {
                 let Some(packet) = packet else { break SessionEnd::Gone };
+                tap.emit("usb_in", || serde_json::json!({ "raw": debug::hex(&packet) }));
                 for ev in pc2.on_usb_packet(&packet, now()) {
                     if events.send(Event::Pc2(ev)).is_err() {
                         break;
@@ -162,26 +166,34 @@ pub async fn run_session(
                 Some(Pc2Cmd::Message(m)) => pc2.send(m, now()),
                 Some(Pc2Cmd::Telegram(t)) => {
                     // Refusals are logged by the PC2 state machine
-                    let _ = pc2.send_telegram(&t, now());
+                    if let Err(e) = pc2.send_telegram(&t, now()) {
+                        tap.emit("pc2_refused", || {
+                            let mut v = debug::telegram_fields(&t);
+                            v["reason"] = serde_json::json!(e.to_string());
+                            v
+                        });
+                    }
                 }
                 None => {
                     pc2.close(now());
-                    let _ = flush(&mut pc2, &usb.tx).await;
+                    let _ = flush(&mut pc2, &usb.tx, &tap).await;
                     break SessionEnd::Shutdown;
                 }
             },
             _ = async { sleep_until(deadline.unwrap()).await }, if deadline.is_some() => pc2.tick(now()),
         }
     };
+    tap.emit("pc2_session", || serde_json::json!({ "state": format!("{end:?}") }));
     if end == SessionEnd::Gone {
         let _ = events.send(Event::Pc2Disconnected);
     }
     end
 }
 
-async fn flush(pc2: &mut pc2::Pc2, tx: &mpsc::Sender<Vec<u8>>) -> Result<(), ()> {
+async fn flush(pc2: &mut pc2::Pc2, tx: &mpsc::Sender<Vec<u8>>, tap: &Tap) -> Result<(), ()> {
     while let Some(p) = pc2.poll_transmit() {
         debug!("PC2 OUT {p:02x?}");
+        tap.emit("usb_out", || serde_json::json!({ "raw": debug::hex(&p) }));
         tx.send(p).await.map_err(|_| ())?;
     }
     Ok(())

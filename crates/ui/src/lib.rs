@@ -198,6 +198,11 @@ impl Ui {
         self.zones.iter().position(|z| (z.lo..=z.hi).contains(&self.pointer)).unwrap_or(0)
     }
 
+    /// The screen is blank (idle or standby).
+    pub fn blanked(&self) -> bool {
+        self.blanked
+    }
+
     pub fn zone(&self) -> &Zone {
         &self.zones[self.zone_index()]
     }
