@@ -1,0 +1,149 @@
+From 19b16d3dba7d4171533114bd1a09566a3801a5d5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 23:40:30 +0000
+Subject: [PATCH 1/2] EXA: fall back to software for composites the 3D engine
+ can't draw
+
+viaExaCheckComposite_H2/_H6 never looked at the picture transform,
+filter or the source repeat type, so a scaled or rotated source was
+drawn as an unscaled crop, RepeatPad/RepeatReflect were drawn as
+RepeatNormal, and a repeating source whose size isn't a power of two
+wrapped at the power-of-two texture size instead of its own size.
+
+Add viaExaPictureSupported() and reject such pictures (and mask
+pictures without a drawable, which PrepareComposite would dereference)
+so they fall back to software. 1x1 repeating pictures are solid
+colours and stay accelerated whatever their transform.
+---
+ src/version.h    |  2 +-
+ src/via_driver.h |  1 +
+ src/via_exa.c    | 54 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/via_exa_h2.c |  8 +++++++
+ src/via_exa_h6.c |  8 +++++++
+ 5 files changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/src/version.h b/src/version.h
+index 43febb4..9f95de9 100644
+--- a/src/version.h
++++ b/src/version.h
+@@ -1 +1 @@
+-#define BUILDCOMMENT "(openchrome 0.6.0 release)"
++#define BUILDCOMMENT "(development build, branch master at revision 5d2c6bd)"
+diff --git a/src/via_driver.h b/src/via_driver.h
+index a1ad2f5..4e22172 100644
+--- a/src/via_driver.h
++++ b/src/via_driver.h
+@@ -408,6 +408,7 @@ CARD32 viaBitExpandHelper(CARD32 pixel, CARD32 bits);
+ Bool viaCheckUpload(ScrnInfoPtr pScrn, Via3DState * v3d);
+ void viaPixelARGB8888(unsigned format, void *pixelP, CARD32 * argb8888);
+ Bool viaExpandablePixel(int format);
++Bool viaExaPictureSupported(PicturePtr pict);
+ void viaAccelFillPixmap(ScrnInfoPtr, unsigned long, unsigned long,
+ 			int, int, int, int, int, unsigned long);
+ void viaAccelTextureBlit(ScrnInfoPtr, unsigned long, unsigned, unsigned,
+diff --git a/src/via_exa.c b/src/via_exa.c
+index 0e464ea..d6b492a 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -384,6 +384,60 @@ viaExpandablePixel(int format)
+             formatType == PICT_TYPE_ABGR || formatType == PICT_TYPE_ARGB);
+ }
+ 
++static Bool
++viaIsPOT(int v)
++{
++    return v > 0 && (v & (v - 1)) == 0;
++}
++
++/*
++ * Check that the 3D engine can sample a source or mask picture the way
++ * Render defines it. EXA leaves this entirely to the driver, so anything
++ * rejected here falls back to software instead of being drawn wrong.
++ *
++ * - Pictures without a drawable (solid fills, gradients) are not handled.
++ * - Only RepeatNone and RepeatNormal are handled, and RepeatNormal only
++ *   when the drawable is a power of two in both directions, because the
++ *   texture unit wraps at the power-of-two texture size it is given.
++ * - A 1x1 repeating picture is a solid colour, so its transform and
++ *   filter don't matter.
++ * - Otherwise the picture must have no transform, and must not use a
++ *   convolution filter (the only filter that matters without one).
++ */
++Bool
++viaExaPictureSupported(PicturePtr pict)
++{
++    DrawablePtr d;
++    Bool solid;
++
++    if (!pict)
++        return TRUE;
++
++    d = pict->pDrawable;
++    if (!d)
++        return FALSE;
++
++    solid = pict->repeat && d->width == 1 && d->height == 1;
++
++    if (pict->repeat) {
++        if (pict->repeatType != RepeatNormal)
++            return FALSE;
++        if (!solid && !(viaIsPOT(d->width) && viaIsPOT(d->height)))
++            return FALSE;
++    }
++
++    if (solid)
++        return TRUE;
++
++    if (pict->transform)
++        return FALSE;
++
++    if (pict->filter == PictFilterConvolution)
++        return FALSE;
++
++    return TRUE;
++}
++
+ #ifdef VIA_DEBUG_COMPOSITE
+ void
+ viaExaCompositePictDesc(PicturePtr pict, char *string, int n)
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index 8ecde2b..4ed38ff 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -299,6 +299,14 @@ viaExaCheckComposite_H2(int op, PicturePtr pSrcPicture,
+     VIAPtr pVia = VIAPTR(pScrn);
+     Via3DState *v3d = &pVia->v3d;
+ 
++    if (!viaExaPictureSupported(pSrcPicture) ||
++        !viaExaPictureSupported(pMaskPicture)) {
++#ifdef VIA_DEBUG_COMPOSITE
++        viaExaPrintCompositeInfo("Transform, filter or repeat not supported", op, pSrcPicture, pMaskPicture, pDstPicture);
++#endif
++        return FALSE;
++    }
++
+     if (!pSrcPicture->pDrawable)
+         return FALSE;
+ 
+diff --git a/src/via_exa_h6.c b/src/via_exa_h6.c
+index 3e593a9..5eb4610 100644
+--- a/src/via_exa_h6.c
++++ b/src/via_exa_h6.c
+@@ -301,6 +301,14 @@ viaExaCheckComposite_H6(int op, PicturePtr pSrcPicture,
+     VIAPtr pVia = VIAPTR(pScrn);
+     Via3DState *v3d = &pVia->v3d;
+ 
++    if (!viaExaPictureSupported(pSrcPicture) ||
++        !viaExaPictureSupported(pMaskPicture)) {
++#ifdef VIA_DEBUG_COMPOSITE
++        viaExaPrintCompositeInfo("Transform, filter or repeat not supported", op, pSrcPicture, pMaskPicture, pDstPicture);
++#endif
++        return FALSE;
++    }
++
+     if (!pSrcPicture->pDrawable) {
+         return FALSE;
+     }
+-- 
+2.43.0
+
