@@ -135,8 +135,7 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         }
 
         if (keycode == Beo4::keycode::cd) {
-            this->pc2->device->send_message({0xe4, 0x01});
-            this->pc2->mixer->set_parameters(34, -1, 0, 0, false);
+            this->pc2->mixer->set_parameters(34, /*treble*/ 0, /*bass*/ -1, 0, /*loudness*/ true);   // = B&O's e3 a2 ff 00 00
             this->pc2->mixer->transmit_locally(true);
             this->pc2->mixer->speaker_power(true);
 
@@ -146,14 +145,12 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         }
 
         if (keycode == Beo4::keycode::tv) {
-            this->pc2->device->send_message({ 0x24 });
-            // Ask the video master for TV. The audio master answers its LINK_INFO and AUDIO_BUS
+            // Ask the video master for TV (AudioMaster takes the bus lock first: 24 / IN 44 / e4 01). The audio master answers its LINK_INFO and AUDIO_BUS
             // questions and turns on playback from the link when the video master confirms.
             audio_master()->listen_to_video_source(Masterlink::source::tv);
-            this->pc2->mixer->set_parameters(34, -1, 0, 0, false);
+            this->pc2->mixer->set_parameters(34, /*treble*/ 0, /*bass*/ -1, 0, /*loudness*/ true);   // = B&O's e3 a2 ff 00 00
             this->pc2->mixer->transmit_locally(false);
             this->pc2->mixer->speaker_power(true);
-            this->pc2->device->send_message({0xe4, 0x01});
         }
         // Volume up
         else if (keycode == 0x60) {
@@ -166,8 +163,6 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         else if (keycode == 0x0c) {
             // Local standby, in B&O's order: speakers off first, then routing. The audio master
             // releases the video master's source; link rooms still listening keep our source.
-            this->pc2->device->send_message({ 0x24 });
-            this->pc2->device->send_message({0xe4, 0x01});
             this->pc2->mixer->speaker_power(false);
             this->pc2->mixer->transmit_locally(false);
             audio_master()->local_standby();
