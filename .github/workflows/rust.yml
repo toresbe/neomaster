@@ -9,21 +9,27 @@ on:
 jobs:
   test:
     runs-on: ubuntu-24.04
+    env:
+      # ALSA (for the Sendspin player) comes from Ubuntu's i386 multiarch packages.
+      PKG_CONFIG_ALLOW_CROSS: "1"
+      PKG_CONFIG_PATH_i686_unknown_linux_gnu: /usr/lib/i386-linux-gnu/pkgconfig
+      CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUSTFLAGS: -L /usr/lib/i386-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           rustup target add i686-unknown-linux-gnu
+          sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y gcc-i686-linux-gnu libc6-dev-i386-cross
+          sudo apt-get install -y gcc-i686-linux-gnu libc6-dev-i386-cross libasound2-dev libasound2-dev:i386
       - name: Test (host)
         run: cargo test --workspace
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test (i686)
         env:
-          CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER: /usr/i686-linux-gnu/lib/ld-linux.so.2 --library-path /usr/i686-linux-gnu/lib
+          CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER: /usr/i686-linux-gnu/lib/ld-linux.so.2 --library-path /usr/i686-linux-gnu/lib:/usr/lib/i386-linux-gnu
         run: cargo test --workspace --target i686-unknown-linux-gnu
       - name: Build for the BeoMaster 5 (i686)
         run: cargo build --release --target i686-unknown-linux-gnu -p neomaster

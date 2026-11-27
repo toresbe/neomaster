@@ -16,6 +16,7 @@ what exists and how to build it.
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
+| `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
 | `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless` | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
@@ -37,8 +38,11 @@ The workspace needs Rust 1.85 or newer (nusb).
 The BM5's VIA C7-D is 32-bit only; `i686-unknown-linux-gnu` (Pentium 4 baseline, SSE2) fits it.
 
 ```sh
-# Debian/Ubuntu host:
-sudo apt install gcc-i686-linux-gnu libc6-dev-i386-cross
+# Debian/Ubuntu host (ALSA headers for the player crate, native and i386):
+sudo dpkg --add-architecture i386
+sudo apt install gcc-i686-linux-gnu libc6-dev-i386-cross libasound2-dev libasound2-dev:i386
+export PKG_CONFIG_ALLOW_CROSS=1 PKG_CONFIG_PATH_i686_unknown_linux_gnu=/usr/lib/i386-linux-gnu/pkgconfig \
+       CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUSTFLAGS="-L /usr/lib/i386-linux-gnu"
 rustup target add i686-unknown-linux-gnu
 cargo build --release --target i686-unknown-linux-gnu
 ```
