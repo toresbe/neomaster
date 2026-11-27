@@ -12,12 +12,14 @@ pub mod audio_master;
 pub mod host;
 pub mod protocol;
 pub mod source_center;
+pub mod sources;
 pub mod telegram;
 pub mod track_info;
 
 pub use audio_master::{AudioMaster, BusState, LockMode};
 pub use host::{Effect, Effects, Host};
 pub use source_center::SourceCenter;
+pub use sources::{LinkRole, LocalSource, SourceMap};
 pub use telegram::Telegram;
 pub use track_info::TrackInfo;
 

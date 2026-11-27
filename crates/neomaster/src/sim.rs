@@ -90,7 +90,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = ui::Ui::new(ui::fake::Library::generate());
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build()?;
-    rt.block_on(Core::new(ui, NoPanel, scene_tx).run(event_rx));
+    let aux_tx = event_tx.clone();
+    rt.spawn(crate::core::poll_aux_card(aux_tx));
+    let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());
+    rt.block_on(Core::new(ui, NoPanel, aux_out, scene_tx).run(event_rx));
     drop(rt);
     let _ = render_thread.join();
     Ok(())

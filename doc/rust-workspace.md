@@ -15,6 +15,7 @@ what exists and how to build it.
 | `crates/ui` | Pointer zones, views, navigation, animation; state in, scene out | List, cover arc (placeholder tiles), now-playing, context menu, volume, idle and blanking, on fake data |
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
+| `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
 | `crates/neomaster` | The binary: core task, actors, `--sim` | Core loop and simulator run |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
@@ -103,3 +104,36 @@ the panel sends, so the core, the panel decoder and the UI run exactly as on the
 follow BeoSound5.exe's own keyboard emulation (arrows, G, A/Z, +/-, S), plus number keys that jump
 the pointer to a zone. Holding GO opens the context menu (the simulator turns on XKB detectable
 autorepeat so a held key does not repeat as press/release pairs).
+
+## A.AUX
+
+Decompiled from BeoSound5.exe and BeoIpcML.exe (names and comments are in the Ghidra projects;
+the TSVs are `bs5exe_aaux.tsv` and `beoipcml_aaux.tsv` in the RE workspace).
+
+What the original software does:
+
+- A.AUX (BeoSound5.exe source 8) has two halves. Selecting it starts USB playback
+  (`AuxSource::OpenUsbPlayback`); a DLNA controller pushing a stream to the BM5's renderer
+  switches it to DMR playback instead. Beo4 N.MUSIC followed by 4 forces USB, by 2 forces DMR.
+- USB playback (`DirectShowEngine::PlayFromUsb`) is a DirectShow graph from the capture device
+  "USB Audio CODEC" (TI/Burr-Brown PCM2900-family USB sound cards) to "DirectSound: HD Audio
+  rear output", the output every BM5 source plays through. The device is matched with the
+  case-insensitive regex `USB\s+AUDIO\s+CODEC`. Plugging the card in only logs; unplugging it
+  tells the source. There is no track info.
+- On the link (BeoIpcML `TPcAuxProxy`): with AUDIO MASTER on, A.AUX is its own device, ML
+  source 0x97 with Beo4 key 0x83. With AUDIO MASTER off (SystemConfiguration 7, the BM5 as a
+  source center) there is no A.AUX on the link: turning A.AUX on switches the N.MUSIC device on
+  (or leaves it on), so link rooms see N.MUSIC (0x7a, or wherever MLConfig moved that slot).
+
+What neomaster does:
+
+- `masterlink::SourceMap` gives each local source its ML source and Beo4 key per role and maps
+  a link request back. `crates/masterlink/tests/a_aux.rs` replays the source center captures
+  with A.AUX playing: the link sees the original N.MUSIC answers byte for byte.
+- `a_aux::AuxSource` plays the card while A.AUX is selected and the card is present. Unlike
+  BeoSound5.exe it waits for a missing card and resumes after replugging.
+- `a_aux::loopback::Loopback` runs `alsaloop -C plughw:CARD=<id>,DEV=0 -P <playback> -t 50000`.
+  `NEOMASTER_AUX_PLAYBACK` picks the playback device, `NEOMASTER_AUX_LATENCY_US` the latency.
+  On the BM5 the A.AUX input is a built-in PCM2902 (USB 08bb:2902, ALSA card `CODEC`) and card 0
+  is the VIA VT1708 onboard audio (`hw:VT82xx,0`), so `default` already plays to it.
+- The DMR half is not replicated; Music Assistant covers network streams.

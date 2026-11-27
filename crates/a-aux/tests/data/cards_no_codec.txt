@@ -1,0 +1,6 @@
+ 0 [NVidia         ]: HDA-Intel - HDA NVidia
+                      HDA NVidia at 0xfc080000 irq 140
+ 1 [Generic        ]: HDA-Intel - HD-Audio Generic
+                      HD-Audio Generic at 0xfc900000 irq 142
+ 2 [EVO8           ]: USB-Audio - EVO8
+                      Audient EVO8 at usb-0000:02:00.0-9, high speed

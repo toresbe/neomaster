@@ -1,0 +1,10 @@
+[package]
+name = "a-aux"
+description = "A.AUX: play a USB sound card's line in through the BeoMaster 5, as BeoSound5.exe does"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+log.workspace = true
