@@ -2,14 +2,14 @@
 //! start/stop behaviour.
 //!
 //! `cards_no_codec.txt` is a real /proc/asound/cards (a desktop with an Audient EVO8).
-//! `cards_pcm2902.txt` is written in the kernel's format with a PCM2902's USB strings; it was
-//! not captured from the BM5 (hardware tests wait for its Debian upgrade).
+//! `cards_bm5.txt` is the BeoMaster 5 itself (Debian 10, 2026-11-27): its A.AUX input is a
+//! built-in TI PCM2902 (USB 08bb:2902) next to the VIA VT1708 onboard audio.
 
 use a_aux::device::{find_usb_audio_codec, is_usb_audio_codec, parse_cards};
 use a_aux::loopback::LoopbackConfig;
 use a_aux::{AuxSource, Card, Effect};
 
-const PCM2902: &str = include_str!("data/cards_pcm2902.txt");
+const PCM2902: &str = include_str!("data/cards_bm5.txt");
 const NO_CODEC: &str = include_str!("data/cards_no_codec.txt");
 
 #[test]
@@ -19,7 +19,7 @@ fn matches_like_beosound5_regex() {
         "USB Audio CODEC",
         "USB Audio CODEC ", // the DirectShow filter name BeoSound5.exe adds
         "usb  audio\tcodec",
-        "Burr-Brown from TI USB Audio CODEC at usb-0000:00:10.4-3, full speed",
+        "Burr-Brown from TI USB Audio CODEC at usb-0000:00:10.1-1, full speed",
         "Microphone (USB Audio CODEC)",
     ] {
         assert!(is_usb_audio_codec(yes), "{yes:?}");

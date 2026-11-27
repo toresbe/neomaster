@@ -1,4 +1,0 @@
- 0 [Audio          ]: HDA-Intel - HDA VIA VT82xx
-                      HDA VIA VT82xx at 0xfdffc000 irq 17
- 1 [CODEC          ]: USB-Audio - USB Audio CODEC
-                      Burr-Brown from TI USB Audio CODEC at usb-0000:00:10.4-3, full speed

@@ -15,7 +15,7 @@ what exists and how to build it.
 | `crates/ui` | Pointer zones, views, navigation, animation; state in, scene out | List, cover arc (placeholder tiles), now-playing, context menu, volume, idle and blanking, on fake data |
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
-| `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; untested on the BM5 |
+| `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
 | `crates/neomaster` | The binary: core task, actors, `--sim` | Core loop and simulator run |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
@@ -133,6 +133,7 @@ What neomaster does:
 - `a_aux::AuxSource` plays the card while A.AUX is selected and the card is present. Unlike
   BeoSound5.exe it waits for a missing card and resumes after replugging.
 - `a_aux::loopback::Loopback` runs `alsaloop -C plughw:CARD=<id>,DEV=0 -P <playback> -t 50000`.
-  `NEOMASTER_AUX_PLAYBACK` picks the playback device (default `default`; on the BM5 it should be
-  the onboard audio that feeds the PC2), `NEOMASTER_AUX_LATENCY_US` the latency.
+  `NEOMASTER_AUX_PLAYBACK` picks the playback device, `NEOMASTER_AUX_LATENCY_US` the latency.
+  On the BM5 the A.AUX input is a built-in PCM2902 (USB 08bb:2902, ALSA card `CODEC`) and card 0
+  is the VIA VT1708 onboard audio (`hw:VT82xx,0`), so `default` already plays to it.
 - The DMR half is not replicated; Music Assistant covers network streams.
