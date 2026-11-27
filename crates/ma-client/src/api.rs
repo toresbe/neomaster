@@ -72,6 +72,22 @@ impl Client {
         self.command("players/get", json!({"player_id": player_id})).await
     }
 
+    /// The player MA shows for an output protocol client (a Sendspin
+    /// client id, say). MA wraps such clients in a "universal" player,
+    /// whose id is the queue id for `play_media`. `None` until MA has
+    /// created it, a few seconds after the client first connects.
+    pub async fn player_for_output(&self, output_protocol_id: &str) -> Result<Option<String>> {
+        let v = self.command_raw("players/all", json!({"return_protocol_players": true})).await?;
+        Ok(v.as_array().into_iter().flatten().find_map(|p| {
+            let wraps = p["output_protocols"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|o| o["output_protocol_id"].as_str() == Some(output_protocol_id));
+            (wraps && p["type"] == "player").then(|| p["player_id"].as_str().unwrap_or_default().to_owned())
+        }))
+    }
+
     pub async fn queue(&self, queue_id: &str) -> Result<PlayerQueue> {
         self.command("player_queues/get", json!({"queue_id": queue_id})).await
     }

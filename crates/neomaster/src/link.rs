@@ -193,6 +193,10 @@ impl Link {
     pub fn role(&self) -> LinkRole {
         self.cfg.role
     }
+    /// Something here listens locally: the audio master has its speakers on.
+    pub fn speakers(&self) -> bool {
+        self.speakers
+    }
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn playing(&self) -> Option<LocalSource> {
         self.playing

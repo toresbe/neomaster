@@ -7,6 +7,7 @@
 //! into a [`render::Scene`]. Nothing here blocks or touches a device.
 
 pub mod fake;
+pub mod idle;
 
 use std::time::Duration;
 
@@ -14,6 +15,8 @@ use bs5_panel::{Button, Input, COUNTS_PER_STEP};
 use render::{Align, Color, Rect, Scene, SCREEN_HEIGHT, SCREEN_WIDTH};
 
 use fake::Library;
+pub use idle::IdleConfig;
+use idle::{Idle, IdleAction};
 
 /// A monotonic timestamp, as a duration since an arbitrary fixed epoch.
 pub type Time = Duration;
@@ -30,7 +33,12 @@ pub enum Effect {
     /// Absolute volume 0..=90, as the PC2 takes it.
     Volume(u8),
     SelectSource(&'static str),
+    /// Blank-screen standby (false: LED on, backlight off) or wake (true: LED off, backlight on).
     Backlight(bool),
+    /// Still blanked: turn the panel LED on again (the stock 10 s refresh).
+    LedRefresh,
+    /// Blank-screen standby stops local playback (stock `EnterBlankStandby`).
+    StopLocalPlayback,
     /// The keyboard's standby key (the panel itself has none; see the open questions).
     Standby,
 }
@@ -123,15 +131,12 @@ pub struct Ui {
     /// Long GO: the context menu, open while GO is held.
     context: Option<usize>,
     go_long: bool,
-    last_input: Time,
     last_frame: Option<Time>,
-    /// After `idle_to_now_playing` without input the view returns to now-playing until the
+    /// The return timer fired (or a first standby press): the view shows now-playing until the
     /// pointer moves.
     idle_now_playing: bool,
-    blanked: bool,
-    pub idle_to_now_playing: Duration,
-    /// Blank-screen standby (stock: 4 min 52 s measured).
-    pub idle_to_blank: Duration,
+    /// Return to now-playing, the standby tick and blank-screen standby, as the stock UI does.
+    idle: Idle,
 }
 
 pub const MAX_VOLUME: u8 = 90;
@@ -156,12 +161,9 @@ impl Ui {
             volume_shown_until: Time::ZERO,
             context: None,
             go_long: false,
-            last_input: Time::ZERO,
             last_frame: None,
             idle_now_playing: false,
-            blanked: false,
-            idle_to_now_playing: Duration::from_secs(180),
-            idle_to_blank: Duration::from_secs(292),
+            idle: Idle::new(IdleConfig::default(), Time::ZERO),
         };
         ui.stacks = (0..ui.zones.len()).map(|i| vec![ui.root_level(ui.zones[i].root)]).collect();
         ui
@@ -196,11 +198,6 @@ impl Ui {
             return 0;
         }
         self.zones.iter().position(|z| (z.lo..=z.hi).contains(&self.pointer)).unwrap_or(0)
-    }
-
-    /// The screen is blank (idle or standby).
-    pub fn blanked(&self) -> bool {
-        self.blanked
     }
 
     pub fn zone(&self) -> &Zone {
@@ -272,11 +269,10 @@ impl Ui {
     /// Feed one panel input.
     pub fn input(&mut self, input: Input, now: Time) -> Vec<Effect> {
         let mut fx = Vec::new();
-        self.last_input = now;
-        if self.blanked {
+        let source_active = self.playing.is_some() || self.idle.playing();
+        if self.idle.input(now, source_active) {
             // Any input while blanked turns the backlight on and is otherwise swallowed, so the
             // first touch does not also scroll.
-            self.blanked = false;
             fx.push(Effect::Backlight(true));
             if let Input::Pointer(p) = input {
                 self.pointer = p;
@@ -351,10 +347,46 @@ impl Ui {
         fx
     }
 
-    /// The keyboard's standby key in `--sim`.
+    /// A short standby (the keyboard's S in `--sim`). As captured on the stock UI: the first
+    /// press while browsing only returns to now-playing; a press on now-playing is the real
+    /// standby, which the core sends on and which comes back as [`Ui::blank`].
     pub fn standby(&mut self, now: Time) -> Vec<Effect> {
-        self.last_input = now;
+        if self.idle.blanked() {
+            return vec![Effect::Standby];
+        }
+        let source_active = self.playing.is_some() || self.idle.playing();
+        self.idle.input(now, source_active);
+        self.context = None;
+        if self.zone().kind != ViewKind::NowPlaying {
+            self.idle_now_playing = true;
+            return vec![];
+        }
         vec![Effect::Standby]
+    }
+
+    /// Local playback started or stopped (paused counts as stopped). While something plays, the
+    /// idle blank waits for the long timeout (stock: 12 h) instead of the first half-hour tick.
+    pub fn set_playing(&mut self, playing: bool) {
+        self.idle.set_playing(playing);
+    }
+
+    /// Our source stopped. As the stock UI does on its source-status event, blank at once unless
+    /// something local still listens (`local_listener`, e.g. the audio master's speakers on TV).
+    pub fn source_stopped(&mut self, local_listener: bool, now: Time) -> Vec<Effect> {
+        self.idle.set_playing(false);
+        if local_listener {
+            return vec![];
+        }
+        self.blank(now)
+    }
+
+    /// The idle timeouts (stock defaults; meant to come from config).
+    pub fn idle_config(&mut self) -> &mut IdleConfig {
+        &mut self.idle.cfg
+    }
+
+    pub fn blanked(&self) -> bool {
+        self.idle.blanked()
     }
 
     fn step(&mut self, steps: i32) -> Vec<Effect> {
@@ -380,23 +412,37 @@ impl Ui {
             Some(item @ (Item::Track(_) | Item::Album(_) | Item::Artist(_))) => {
                 let t = self.tracks_of(item);
                 self.playing = t.first().copied();
+                // The fake library plays at once; with Music Assistant the core reports playback.
+                self.idle.set_playing(true);
                 vec![Effect::Play(t)]
             }
             _ => vec![],
         }
     }
 
-    /// Timers: return to now-playing, blank the screen.
+    /// Timers: return to now-playing, the standby tick, the LED refresh while blanked.
     pub fn tick(&mut self, now: Time) -> Vec<Effect> {
-        let idle = now.saturating_sub(self.last_input);
-        if !self.idle_now_playing && idle >= self.idle_to_now_playing && self.context.is_none() {
-            self.idle_now_playing = true;
+        let mut fx = Vec::new();
+        for a in self.idle.tick(now) {
+            match a {
+                IdleAction::ReturnToNowPlaying => {
+                    if self.context.is_none() {
+                        self.idle_now_playing = true;
+                    }
+                }
+                IdleAction::Blank => {
+                    self.context = None;
+                    self.idle_now_playing = true;
+                    fx.extend(Self::blank_effects());
+                }
+                IdleAction::LedRefresh => fx.push(Effect::LedRefresh),
+            }
         }
-        if !self.blanked && idle >= self.idle_to_blank {
-            self.blanked = true;
-            return vec![Effect::Backlight(false)];
-        }
-        vec![]
+        fx
+    }
+
+    fn blank_effects() -> [Effect; 2] {
+        [Effect::StopLocalPlayback, Effect::Backlight(false)]
     }
 
     /// When the next frame is due: in one frame while something moves, at the end of the volume
@@ -412,13 +458,7 @@ impl Ui {
 
     /// The next timer [`Ui::tick`] needs, if any.
     pub fn next_timer(&self) -> Option<Time> {
-        if self.blanked {
-            None
-        } else if self.idle_now_playing {
-            Some(self.last_input + self.idle_to_blank)
-        } else {
-            Some(self.last_input + self.idle_to_now_playing.min(self.idle_to_blank))
-        }
+        self.idle.next_deadline()
     }
 
     pub fn volume(&self) -> u8 {
@@ -431,14 +471,15 @@ impl Ui {
         self.volume = volume.min(MAX_VOLUME);
     }
 
-    /// Blank-screen standby now (the room went to standby): the backlight goes off until the
-    /// next input, as after the idle timeout.
-    pub fn blank(&mut self) -> Vec<Effect> {
-        if self.blanked {
+    /// Blank-screen standby now (standby, long standby, or our source released): local
+    /// playback stops, LED on, backlight off until the next input.
+    pub fn blank(&mut self, now: Time) -> Vec<Effect> {
+        if !self.idle.blank(now) {
             return vec![];
         }
-        self.blanked = true;
-        vec![Effect::Backlight(false)]
+        self.context = None;
+        self.idle_now_playing = true;
+        Self::blank_effects().to_vec()
     }
 
     fn animate(&mut self, now: Time) {
@@ -456,7 +497,7 @@ impl Ui {
     /// Build the frame for `now`.
     pub fn scene(&mut self, now: Time) -> Scene {
         let mut s = Scene::new(Color::BLACK);
-        if self.blanked {
+        if self.idle.blanked() {
             return s;
         }
         self.animate(now);
@@ -676,14 +717,62 @@ mod tests {
     }
 
     #[test]
-    fn blanks_when_idle_and_swallows_the_waking_input() {
+    fn blanks_on_the_half_hour_tick_and_swallows_the_waking_input() {
         let mut ui = ui_at(76);
-        assert_eq!(ui.tick(ms(292_000)), vec![Effect::Backlight(false)]);
-        assert!(ui.scene(ms(292_001)).items.is_empty());
-        assert_eq!(ui.input(Input::MenuWheel(15), ms(300_000)), vec![Effect::Backlight(true)]);
-        assert_eq!(ui.zone().kind, ViewKind::NowPlaying); // idle returned to now-playing
-        ui.input(Input::Pointer(77), ms(300_100));
+        assert_eq!(ui.tick(ms(1_799_999)), vec![]);
+        assert_eq!(ui.tick(ms(1_800_000)), vec![Effect::StopLocalPlayback, Effect::Backlight(false)]);
+        assert!(ui.scene(ms(1_800_001)).items.is_empty());
+        assert_eq!(ui.tick(ms(1_810_000)), vec![Effect::LedRefresh]);
+        assert_eq!(ui.input(Input::MenuWheel(15), ms(1_815_000)), vec![Effect::Backlight(true)]);
+        assert_eq!(ui.zone().kind, ViewKind::NowPlaying);
+        ui.input(Input::Pointer(77), ms(1_815_100));
         assert_eq!(ui.level().unwrap().cursor, 0); // the waking wheel turn did not scroll
+    }
+
+    #[test]
+    fn returns_to_now_playing_after_three_minutes_once_something_plays() {
+        let mut ui = ui_at(62);
+        assert_eq!(ui.next_timer(), Some(ms(1_800_000))); // nothing playing: no return timer
+        ui.input(Input::Pressed(Button::Go), ms(1));
+        ui.input(Input::Released(Button::Go), ms(50));
+        ui.input(Input::Pointer(76), ms(1000));
+        ui.tick(ms(180_999));
+        assert_eq!(ui.zone().name, "ARTISTS");
+        ui.tick(ms(181_000));
+        assert_eq!(ui.zone().kind, ViewKind::NowPlaying);
+    }
+
+    #[test]
+    fn playing_keeps_the_screen_on_for_twelve_hours() {
+        let mut ui = ui_at(62);
+        ui.input(Input::Pressed(Button::Go), ms(1));
+        ui.input(Input::Released(Button::Go), ms(50)); // plays (fake library)
+        let t0 = 50;
+        for k in 1..24u64 {
+            assert!(!ui.tick(ms(t0 + k * 1_800_000)).contains(&Effect::Backlight(false)));
+        }
+        assert_eq!(ui.tick(ms(t0 + 24 * 1_800_000)), vec![Effect::StopLocalPlayback, Effect::Backlight(false)]);
+    }
+
+    #[test]
+    fn first_standby_returns_to_now_playing_second_is_standby() {
+        let mut ui = ui_at(76);
+        assert_eq!(ui.standby(ms(10)), vec![]);
+        assert_eq!(ui.zone().kind, ViewKind::NowPlaying);
+        assert_eq!(ui.standby(ms(20)), vec![Effect::Standby]);
+        // the core sends it on and the room's standby comes back as blank()
+        assert_eq!(ui.blank(ms(21)), vec![Effect::StopLocalPlayback, Effect::Backlight(false)]);
+        assert_eq!(ui.blank(ms(22)), vec![]);
+    }
+
+    #[test]
+    fn source_stopped_blanks_unless_something_local_listens() {
+        let mut ui = ui_at(0);
+        ui.set_playing(true);
+        assert_eq!(ui.source_stopped(true, ms(10)), vec![]);
+        assert!(!ui.blanked());
+        assert_eq!(ui.source_stopped(false, ms(20)), vec![Effect::StopLocalPlayback, Effect::Backlight(false)]);
+        assert!(ui.blanked());
     }
 
     #[test]

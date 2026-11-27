@@ -10,7 +10,7 @@
 //! | IN | 3 | buttons: 0x40 GO, 0x20 LEFT, 0x10 RIGHT |
 //! | IN | 4, 5 | constant 0xc0; lagging copy of the pointer (ignored) |
 //! | OUT, SET_REPORT, 2 bytes | 0 | 0x40 backlight, 0x80 LED solid, 0x10 LED blink, low nibble = one click |
-//! | OUT | 1 | IR flags: c0 awake, 80 idle (kept at the stock values) |
+//! | OUT | 1 | IR flags: c0 (both captured blanks ended on c0) |
 //!
 //! The panel has no detents and no long press in hardware: [`Decoder`] times holds, and
 //! [`Output`] coalesces clicks to at most one per frame. Unlike the stock UI, the first wheel
@@ -185,7 +185,7 @@ pub enum Led {
 pub struct Output {
     pub backlight: bool,
     pub led: Led,
-    /// Byte 1. The stock UI sends c0 while awake and 80 while the screen is blanked.
+    /// Byte 1, the IR flags. Both captured blanks ended on c0; 80 was seen only briefly.
     pub ir_flags: u8,
     /// At most one click per this interval (one frame at 60 Hz): a fast spin must not flood the
     /// bus (the stock UI sent about 60 clicks in 3 s).
@@ -194,6 +194,7 @@ pub struct Output {
 }
 
 pub const IR_AWAKE: u8 = 0xc0;
+/// Seen briefly in one capture ("40 80"); not used.
 pub const IR_IDLE: u8 = 0x80;
 
 impl Default for Output {
@@ -238,20 +239,30 @@ impl Output {
         Some([self.byte0() | 0x01, self.ir_flags])
     }
 
-    /// Blank-screen standby (stock: after about 5 minutes idle): backlight off, LED solid, IR idle.
-    pub fn blank(&mut self) -> [u8; 2] {
-        self.backlight = false;
+    /// Blank-screen standby: LED solid, then backlight off, as `BeoSound5.exe` does it
+    /// (HwSource SetLed(1) then SetBacklight(0)): "c0 c0", "80 c0". Send both, in order.
+    pub fn blank(&mut self) -> [[u8; 2]; 2] {
+        self.ir_flags = IR_AWAKE;
         self.led = Led::Solid;
-        self.ir_flags = IR_IDLE;
+        let first = self.report();
+        self.backlight = false;
+        [first, self.report()]
+    }
+
+    /// While blanked, the stock UI turns the LED on again every 10 s (SetLed(1)).
+    pub fn led_refresh(&mut self) -> [u8; 2] {
+        self.led = Led::Solid;
         self.report()
     }
 
-    /// Wake from blank-screen standby: "40 c0".
-    pub fn wake(&mut self) -> [u8; 2] {
-        self.backlight = true;
-        self.led = Led::Off;
+    /// Wake from blank-screen standby: LED off, then backlight on (SetLed(0), SetBacklight(1)):
+    /// "00 c0", "40 c0". Send both, in order.
+    pub fn wake(&mut self) -> [[u8; 2]; 2] {
         self.ir_flags = IR_AWAKE;
-        self.report()
+        self.led = Led::Off;
+        let first = self.report();
+        self.backlight = true;
+        [first, self.report()]
     }
 }
 
@@ -302,7 +313,8 @@ mod tests {
         assert_eq!(o.click(ms(0)), Some([0x41, 0xc0])); // "41 c0"
         assert_eq!(o.click(ms(5)), None); // coalesced within the frame
         assert_eq!(o.click(ms(17)), Some([0x41, 0xc0]));
-        assert_eq!(o.blank(), [0x80, 0x80]);
-        assert_eq!(o.wake(), [0x40, 0xc0]);
+        assert_eq!(o.blank(), [[0xc0, 0xc0], [0x80, 0xc0]]); // 19:50:30 capture
+        assert_eq!(o.led_refresh(), [0x80, 0xc0]);
+        assert_eq!(o.wake(), [[0x00, 0xc0], [0x40, 0xc0]]); // 19:52:36 capture
     }
 }

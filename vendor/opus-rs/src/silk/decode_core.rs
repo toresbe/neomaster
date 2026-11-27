@@ -1,0 +1,311 @@
+use crate::silk::decoder_structs::{SilkDecoderControl, SilkDecoderState};
+use crate::silk::define::*;
+use crate::silk::macros::*;
+use crate::silk::tables::SILK_QUANTIZATION_OFFSETS_Q10;
+
+pub fn silk_decode_core(
+    ps_dec: &mut SilkDecoderState,
+    ps_dec_ctrl: &SilkDecoderControl,
+    xq: &mut [i16],
+    pulses: &[i16],
+) {
+    let nlsf_interpolation_flag = if ps_dec.indices.nlsf_interp_coef_q2 < 4 {
+        1
+    } else {
+        0
+    };
+
+    let offset_q10 = SILK_QUANTIZATION_OFFSETS_Q10[(ps_dec.indices.signal_type >> 1) as usize]
+        [ps_dec.indices.quant_offset_type as usize] as i32;
+
+    let mut rand_seed = ps_dec.indices.seed as i32;
+    for i in 0..ps_dec.frame_length as usize {
+        rand_seed = silk_rand(rand_seed);
+        ps_dec.exc_q14[i] = (pulses[i] as i32) << 14;
+        if ps_dec.exc_q14[i] > 0 {
+            ps_dec.exc_q14[i] -= QUANT_LEVEL_ADJUST_Q10 << 4;
+        } else if ps_dec.exc_q14[i] < 0 {
+            ps_dec.exc_q14[i] += QUANT_LEVEL_ADJUST_Q10 << 4;
+        }
+        ps_dec.exc_q14[i] += offset_q10 << 4;
+        if rand_seed < 0 {
+            ps_dec.exc_q14[i] = -ps_dec.exc_q14[i];
+        }
+        rand_seed = silk_add32_ovflw(rand_seed, pulses[i] as i32);
+    }
+
+    let mut s_lpc_q14: [i32; MAX_SUB_FRAME_LENGTH + MAX_LPC_ORDER] =
+        [0; MAX_SUB_FRAME_LENGTH + MAX_LPC_ORDER];
+    s_lpc_q14[..MAX_LPC_ORDER].copy_from_slice(&ps_dec.s_lpc_q14_buf);
+
+    let mut pexc_q14_idx: usize = 0;
+    let mut pxq_idx: usize = 0;
+    let mut s_ltp_buf_idx = ps_dec.ltp_mem_length;
+
+    let s_ltp_q15_len = ps_dec.ltp_mem_length as usize + ps_dec.frame_length as usize;
+    let s_ltp_len = ps_dec.ltp_mem_length as usize;
+
+    const MAX_S_LTP_Q15: usize = 640;
+    const MAX_S_LTP: usize = 320;
+    debug_assert!(s_ltp_q15_len <= MAX_S_LTP_Q15);
+    debug_assert!(s_ltp_len <= MAX_S_LTP);
+    let mut s_ltp_q15_buf = [0i32; MAX_S_LTP_Q15];
+    let s_ltp_q15 = &mut s_ltp_q15_buf[..s_ltp_q15_len];
+    let mut s_ltp_buf = [0i16; MAX_S_LTP];
+    let s_ltp = &mut s_ltp_buf[..s_ltp_len];
+
+    for k in 0..ps_dec.nb_subfr as usize {
+        let a_q12 = &ps_dec_ctrl.pred_coef_q12[k >> 1];
+        let b_q14 = &ps_dec_ctrl.ltp_coef_q14[k * LTP_ORDER..];
+        let signal_type = ps_dec.indices.signal_type;
+
+        let mut inv_gain_q31 = silk_inverse32_varq(ps_dec_ctrl.gains_q16[k], 47);
+
+        let gain_adj_q16 = if ps_dec_ctrl.gains_q16[k] != ps_dec.prev_gain_q16 {
+            let adj = silk_div32_varq(ps_dec.prev_gain_q16, ps_dec_ctrl.gains_q16[k], 16);
+
+            for i in 0..MAX_LPC_ORDER {
+                s_lpc_q14[i] = silk_smulww(adj, s_lpc_q14[i]);
+            }
+            adj
+        } else {
+            1 << 16
+        };
+
+        ps_dec.prev_gain_q16 = ps_dec_ctrl.gains_q16[k];
+
+        let (eff_signal_type, eff_pitch_l) = if ps_dec.loss_cnt > 0
+            && ps_dec.prev_signal_type == TYPE_VOICED
+            && ps_dec.indices.signal_type as i32 != TYPE_VOICED
+            && k < MAX_NB_SUBFR / 2
+        {
+            (TYPE_VOICED, ps_dec.lag_prev)
+        } else {
+            (signal_type as i32, ps_dec_ctrl.pitch_l[k])
+        };
+
+        let mut lag = 0;
+        if eff_signal_type == TYPE_VOICED {
+            lag = eff_pitch_l;
+
+            if k == 0 || (k == 2 && nlsf_interpolation_flag != 0) {
+                let start_idx =
+                    ps_dec.ltp_mem_length - lag - ps_dec.lpc_order - (LTP_ORDER / 2) as i32;
+                debug_assert!(start_idx > 0);
+
+                if k == 2 {
+                    let copy_start = ps_dec.ltp_mem_length as usize;
+                    let copy_len = 2 * ps_dec.subfr_length as usize;
+                    ps_dec.out_buf[copy_start..copy_start + copy_len]
+                        .copy_from_slice(&xq[0..copy_len]);
+                }
+
+                let filter_input_offset = start_idx as usize + k * ps_dec.subfr_length as usize;
+                let filter_len = (ps_dec.ltp_mem_length - start_idx) as usize;
+                silk_lpc_analysis_filter_offset(
+                    s_ltp,
+                    start_idx as usize,
+                    &ps_dec.out_buf,
+                    filter_input_offset,
+                    a_q12,
+                    filter_len,
+                    ps_dec.lpc_order as usize,
+                );
+
+                if k == 0 {
+                    inv_gain_q31 =
+                        silk_lshift(silk_smulwb(inv_gain_q31, ps_dec_ctrl.ltp_scale_q14), 2);
+                }
+                for i in 0..(lag + LTP_ORDER as i32 / 2) as usize {
+                    s_ltp_q15[s_ltp_buf_idx as usize - i - 1] = silk_smulwb(
+                        inv_gain_q31,
+                        s_ltp[ps_dec.ltp_mem_length as usize - i - 1] as i32,
+                    );
+                }
+            } else if gain_adj_q16 != (1 << 16) {
+                for i in 0..(lag + LTP_ORDER as i32 / 2) as usize {
+                    s_ltp_q15[s_ltp_buf_idx as usize - i - 1] =
+                        silk_smulww(gain_adj_q16, s_ltp_q15[s_ltp_buf_idx as usize - i - 1]);
+                }
+            }
+        }
+
+        let mut res_q14: [i32; MAX_SUB_FRAME_LENGTH] = [0; MAX_SUB_FRAME_LENGTH];
+
+        if eff_signal_type == TYPE_VOICED {
+            let pred_lag_ptr_start = (s_ltp_buf_idx - lag + LTP_ORDER as i32 / 2) as usize;
+            for i in 0..ps_dec.subfr_length as usize {
+                let mut ltp_pred_q13: i32 = 2;
+                ltp_pred_q13 = silk_smlawb(
+                    ltp_pred_q13,
+                    s_ltp_q15[pred_lag_ptr_start + i],
+                    b_q14[0] as i32,
+                );
+                ltp_pred_q13 = silk_smlawb(
+                    ltp_pred_q13,
+                    s_ltp_q15[pred_lag_ptr_start + i - 1],
+                    b_q14[1] as i32,
+                );
+                ltp_pred_q13 = silk_smlawb(
+                    ltp_pred_q13,
+                    s_ltp_q15[pred_lag_ptr_start + i - 2],
+                    b_q14[2] as i32,
+                );
+                ltp_pred_q13 = silk_smlawb(
+                    ltp_pred_q13,
+                    s_ltp_q15[pred_lag_ptr_start + i - 3],
+                    b_q14[3] as i32,
+                );
+                ltp_pred_q13 = silk_smlawb(
+                    ltp_pred_q13,
+                    s_ltp_q15[pred_lag_ptr_start + i - 4],
+                    b_q14[4] as i32,
+                );
+
+                res_q14[i] = silk_add_lshift32(ps_dec.exc_q14[pexc_q14_idx + i], ltp_pred_q13, 1);
+
+                s_ltp_q15[s_ltp_buf_idx as usize] = res_q14[i] << 1;
+                s_ltp_buf_idx += 1;
+            }
+        } else {
+            res_q14[..(ps_dec.subfr_length as usize)].copy_from_slice(
+                &ps_dec.exc_q14[pexc_q14_idx..(ps_dec.subfr_length as usize + pexc_q14_idx)],
+            );
+        }
+
+        for i in 0..ps_dec.subfr_length as usize {
+            let mut lpc_pred_q10: i32 = ps_dec.lpc_order >> 1;
+
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 1],
+                a_q12[0] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 2],
+                a_q12[1] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 3],
+                a_q12[2] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 4],
+                a_q12[3] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 5],
+                a_q12[4] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 6],
+                a_q12[5] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 7],
+                a_q12[6] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 8],
+                a_q12[7] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 9],
+                a_q12[8] as i32,
+            );
+            lpc_pred_q10 = silk_smlawb(
+                lpc_pred_q10,
+                s_lpc_q14[MAX_LPC_ORDER + i - 10],
+                a_q12[9] as i32,
+            );
+
+            if ps_dec.lpc_order == 16 {
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 11],
+                    a_q12[10] as i32,
+                );
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 12],
+                    a_q12[11] as i32,
+                );
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 13],
+                    a_q12[12] as i32,
+                );
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 14],
+                    a_q12[13] as i32,
+                );
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 15],
+                    a_q12[14] as i32,
+                );
+                lpc_pred_q10 = silk_smlawb(
+                    lpc_pred_q10,
+                    s_lpc_q14[MAX_LPC_ORDER + i - 16],
+                    a_q12[15] as i32,
+                );
+            }
+
+            s_lpc_q14[MAX_LPC_ORDER + i] =
+                silk_add_sat32(res_q14[i], silk_lshift_sat32(lpc_pred_q10, 4));
+
+            let gain_q10 = ps_dec_ctrl.gains_q16[k] >> 6;
+            let product = silk_smulww(s_lpc_q14[MAX_LPC_ORDER + i], gain_q10);
+            xq[pxq_idx + i] = silk_sat16(silk_rshift_round(product, 8)) as i16;
+        }
+
+        for i in 0..MAX_LPC_ORDER {
+            s_lpc_q14[i] = s_lpc_q14[ps_dec.subfr_length as usize + i];
+        }
+        pexc_q14_idx += ps_dec.subfr_length as usize;
+        pxq_idx += ps_dec.subfr_length as usize;
+    }
+
+    ps_dec
+        .s_lpc_q14_buf
+        .copy_from_slice(&s_lpc_q14[..MAX_LPC_ORDER]);
+}
+
+fn silk_lpc_analysis_filter_offset(
+    out: &mut [i16],
+    out_offset: usize,
+    input: &[i16],
+    input_offset: usize,
+    b: &[i16],
+    len: usize,
+    d: usize,
+) {
+    for ix in 0..d {
+        out[out_offset + ix] = 0;
+    }
+
+    for ix in d..len {
+        let mut out32_q12: i32 = 0;
+        for j in 0..d {
+            out32_q12 = out32_q12.wrapping_add(silk_smulbb(
+                input[input_offset + ix - j - 1] as i32,
+                b[j] as i32,
+            ));
+        }
+
+        out32_q12 = ((input[input_offset + ix] as i32) << 12).wrapping_sub(out32_q12);
+
+        let out32 = silk_rshift_round(out32_q12, 12);
+
+        out[out_offset + ix] = silk_sat16(out32) as i16;
+    }
+}
