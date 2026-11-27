@@ -15,10 +15,12 @@ render = { workspace = true, features = ["xrender"] }
 ui.workspace = true
 log.workspace = true
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 x11rb = { version = "0.13", default-features = false, features = ["xkb"] }
 nusb = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "test-util"] }

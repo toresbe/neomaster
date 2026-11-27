@@ -5,6 +5,7 @@
 //! window and the keyboard, so the UI can be built without a BM5.
 
 mod core;
+mod debug;
 mod link;
 mod pc2_actor;
 mod sim;
@@ -19,8 +20,9 @@ use tokio::sync::mpsc;
 use crate::core::{Core, Event};
 use crate::link::{Link, Pc2Cmd};
 
-const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE]
-       neomaster --headless [--role ROLE]
+const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [DEBUG OPTIONS]
+       neomaster --headless [--role ROLE] [DEBUG OPTIONS]
+       neomaster debug COMMAND   (the debug client; neomaster debug --help)
 
   --sim       run the panel UI in a 1024x768 X11 window; the keyboard stands in for the panel
               (see neomaster --keys) and a simulated PC2 for the real one
@@ -31,6 +33,16 @@ const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE]
               link-source is AUDIO MASTER off: the BM5 provides sources for another
               product's audio master and sends its panel keys to the room's master
   --keys      print the simulator's key bindings
+
+Debug connection (off by default; see doc/debug-connection.md):
+  --debug             serve the debug socket ($NEOMASTER_DEBUG=1); it streams panel reports,
+                      Masterlink telegrams, state and timings, and takes injected input
+  --debug-socket PATH serve it at PATH ($NEOMASTER_DEBUG_SOCKET; default
+                      $XDG_RUNTIME_DIR/neomaster-debug.sock or /tmp/neomaster-debug.sock)
+  --debug-tcp ADDR    also serve it on TCP, e.g. 0.0.0.0:7155 or just 7155 ($NEOMASTER_DEBUG_TCP);
+                      read-only unless --debug-tcp-inject ($NEOMASTER_DEBUG_TCP_INJECT=1)
+  --debug-record FILE record everything from start-up to a JSON Lines file
+                      ($NEOMASTER_DEBUG_RECORD)
 ";
 
 /// Which PC2 the core talks to.
@@ -76,9 +88,15 @@ pub fn spawn_pc2(
     cmd_tx
 }
 
-fn headless(role: LinkRole) -> Result<(), Box<dyn std::error::Error>> {
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build()?;
+/// What a debug client's `hello` says about this run.
+pub fn debug_hello(mode: &str, role: LinkRole, device: Pc2Device) -> serde_json::Value {
+    serde_json::json!({ "mode": mode, "role": format!("{role:?}"), "pc2_device": format!("{device:?}") })
+}
+
+fn headless(role: LinkRole, debug_cfg: &debug::Config) -> Result<(), Box<dyn std::error::Error>> {
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
+    debug::server::start(&rt, debug_cfg, event_tx.clone(), debug_hello("headless", role, Pc2Device::Usb))?;
     let pc2 = spawn_pc2(&rt, Pc2Device::Usb, role, event_tx.clone());
     // No screen: scenes go nowhere.
     let (scene_tx, scene_rx) = std_mpsc::sync_channel(1);
@@ -97,8 +115,18 @@ fn headless(role: LinkRole) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| a == "debug") {
+        return debug::client::main(&args[1..]);
+    }
+    debug::logger::TapLogger::init(&mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")));
+    let mut debug_cfg = match debug::Config::from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("neomaster: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     let mut role = std::env::var("NEOMASTER_ML_ROLE").ok().and_then(|r| parse_role(&r)).unwrap_or(LinkRole::SourceCenter);
     let mut device = Pc2Device::Simulated;
     let mut mode = None;
@@ -107,6 +135,25 @@ fn main() -> ExitCode {
         match a.as_str() {
             "--sim" | "--headless" | "--keys" | "--help" | "-h" => mode = Some(a.as_str()),
             "--usb" => device = Pc2Device::Usb,
+            "--debug" => debug_cfg.socket = Some(debug_cfg.socket.take().unwrap_or_else(debug::default_socket)),
+            "--debug-tcp-inject" => debug_cfg.tcp_inject = true,
+            "--debug-socket" | "--debug-tcp" | "--debug-record" => {
+                let Some(v) = it.next() else {
+                    eprint!("{USAGE}");
+                    return ExitCode::FAILURE;
+                };
+                match a.as_str() {
+                    "--debug-socket" => debug_cfg.socket = Some(v.into()),
+                    "--debug-record" => debug_cfg.record = Some(v.into()),
+                    _ => match debug::server::parse_tcp(v) {
+                        Ok(addr) => debug_cfg.tcp = Some(addr),
+                        Err(e) => {
+                            eprintln!("neomaster: --debug-tcp: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    },
+                }
+            }
             "--role" => match it.next().and_then(|r| parse_role(r)) {
                 Some(r) => role = r,
                 None => {
@@ -121,8 +168,8 @@ fn main() -> ExitCode {
         }
     }
     let result = match mode {
-        Some("--sim") => sim::run(role, device),
-        Some("--headless") => headless(role),
+        Some("--sim") => sim::run(role, device, &debug_cfg),
+        Some("--headless") => headless(role, &debug_cfg),
         Some("--keys") => {
             print!("{}", sim::KEYS);
             return ExitCode::SUCCESS;

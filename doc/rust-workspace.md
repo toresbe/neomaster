@@ -17,7 +17,7 @@ what exists and how to build it.
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
 | `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
-| `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless` | Core loop, Masterlink loop and simulator run; panel actor not written yet |
+| `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
 machine takes `now` as a `Duration` since a fixed epoch, so tests drive time directly.
@@ -29,6 +29,7 @@ cargo test                       # all crates, on the host
 cargo run -p neomaster -- --sim  # the UI in a 1024x768 window; `--keys` lists the bindings
 cargo run -p neomaster -- --sim --role audio-master   # the same with the other Masterlink role
 neomaster --headless             # on the BM5: the Masterlink loop on the real PC2, no panel
+neomaster --headless --debug     # the same, with the debug socket (doc/debug-connection.md)
 ```
 
 The workspace needs Rust 1.85 or newer (nusb).

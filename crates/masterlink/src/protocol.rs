@@ -46,6 +46,47 @@ pub fn node_name(n: u8) -> String {
     }
 }
 
+/// A readable name for a telegram type (byte 3), for logs and the debug stream.
+pub fn telegram_type_name(t: u8) -> Option<&'static str> {
+    Some(match t {
+        telegram_type::COMMAND => "COMMAND",
+        telegram_type::REQUEST => "REQUEST",
+        telegram_type::STATUS => "STATUS",
+        telegram_type::INFO => "INFO",
+        telegram_type::TIME => "TIME",
+        telegram_type::CONFIG => "CONFIG",
+        _ => return None,
+    })
+}
+
+/// B&O's name for a payload type (byte 7), for logs and the debug stream.
+pub fn payload_type_name(p: u8) -> Option<&'static str> {
+    use payload_type::*;
+    Some(match p {
+        LINK_INFO => "LINK_INFO",
+        DISPLAY_DATA => "DISPLAY_DATA",
+        AUDIO_BUS => "AUDIO_BUS",
+        METADATA => "METADATA",
+        SOURCE_CONTROL => "SOURCE_CONTROL",
+        STANDBY_0 => "STANDBY_0",
+        STANDBY_1 => "STANDBY_1",
+        STANDBY_2 => "STANDBY_2",
+        BUS_RELEASED => "BUS_RELEASED",
+        IR_SIMUL_LOW => "IR_SIMUL_LOW",
+        LOCAL_SOURCE => "LOCAL_SOURCE",
+        PROGRAMMING_STATUS => "PROGRAMMING_STATUS",
+        LINK_CONNECT_0 => "LINK_CONNECT_0",
+        LINK_CONNECT_1 => "LINK_CONNECT_1",
+        LINK_CONNECT_2 => "LINK_CONNECT_2",
+        SL_CONFIG => "SL_CONFIG",
+        LOCK_MANAGER => "LOCK_MANAGER",
+        SOURCE_CONNECT => "SOURCE_CONNECT",
+        PRI_SYSTEM_STATUS => "PRI_SYSTEM_STATUS",
+        SOURCE_STATUS => "SOURCE_STATUS",
+        _ => return None,
+    })
+}
+
 /// Telegram types (byte 3).
 pub mod telegram_type {
     pub const COMMAND: u8 = 0x0a;

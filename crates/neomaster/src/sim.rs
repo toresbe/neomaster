@@ -46,7 +46,7 @@ impl PanelOut for NoPanel {
     }
 }
 
-pub fn run(role: LinkRole, device: Pc2Device) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = XRenderer::open_window("neomaster --sim", SCREEN_WIDTH, SCREEN_HEIGHT)?;
     let conn = renderer.connection();
     let window = renderer.window();
@@ -92,7 +92,8 @@ pub fn run(role: LinkRole, device: Pc2Device) -> Result<(), Box<dyn std::error::
     })?;
 
     let ui = ui::Ui::new(ui::fake::Library::generate());
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+    crate::debug::server::start(&rt, debug_cfg, event_tx.clone(), crate::debug_hello("sim", role, device))?;
     let aux_tx = event_tx.clone();
     rt.spawn(crate::core::poll_aux_card(aux_tx));
     let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());

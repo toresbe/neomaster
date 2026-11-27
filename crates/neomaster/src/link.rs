@@ -56,6 +56,22 @@ pub enum AppEffect {
     Volume(u8),
 }
 
+/// [`Link`]'s state as the debug stream reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Snapshot {
+    pub started: bool,
+    pub playing: Option<LocalSource>,
+    pub selected: Option<LocalSource>,
+    pub speakers: bool,
+    pub volume: u8,
+    /// Audio master only.
+    pub bus: Option<masterlink::BusState>,
+    pub holds_bus_lock: bool,
+    /// Link source only: our source is on the link.
+    pub distributing: bool,
+    pub current_source: u8,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outputs {
     pub pc2: Vec<Pc2Cmd>,
@@ -188,6 +204,23 @@ impl Link {
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn mixer(&self) -> &pc2::MixerState {
         &self.mixer.state
+    }
+    /// What the debug stream reports as link state.
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            started: self.started,
+            playing: self.playing,
+            selected: self.selected,
+            speakers: self.speakers,
+            volume: self.volume,
+            bus: self.audio_master().map(|am| am.state()),
+            holds_bus_lock: self.audio_master().is_some_and(|am| am.holds_bus_lock()),
+            distributing: self.source_center().is_some_and(|sc| sc.distributing()),
+            current_source: match &self.machine {
+                Machine::AudioMaster(am) => am.current_source(),
+                Machine::SourceCenter(sc) => sc.current_source(),
+            },
+        }
     }
     pub fn audio_master(&self) -> Option<&AudioMaster> {
         match &self.machine {
