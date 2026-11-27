@@ -8,6 +8,7 @@ license-file.workspace = true
 
 [dependencies]
 a-aux.workspace = true
+settings.workspace = true
 bs5-panel.workspace = true
 masterlink.workspace = true
 pc2.workspace = true

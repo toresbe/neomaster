@@ -51,10 +51,11 @@ the stations tested; TuneIn works too.
 ## Music Assistant
 
 The N.RADIO actor (`crates/neomaster/src/radio_actor.rs`) plays with
-`player_queues/play_media` (option `replace`) on the queue in `NEOMASTER_MA_PLAYER`, and stops that
-queue when N.RADIO stops or another source takes over. It reads `MA_URL`, `MA_TOKEN` and
-`NEOMASTER_MA_PLAYER`, the names the settings layer uses; without them N.RADIO tunes and logs but
-plays nothing. Several quick presses only start the newest station.
+`player_queues/play_media` (option `replace`) on the BM5's queue, and stops that queue when N.RADIO
+stops or another source takes over. It takes the server, the queue and the token from the
+settings' `[music_assistant]` (`url`, `player_id`, and `MA_TOKEN` or `token_file`; `MA_URL` and
+`NEOMASTER_MA_PLAYER` override them for a run); without them N.RADIO tunes and logs but plays
+nothing. Several quick presses only start the newest station.
 
 Tested on 27 Nov 2026 against MA 2.10.13 with a silent Sendspin player (`bm5_player` on the ALSA
 `null` device) and `neomaster --headless` driven over the debug socket: the timer's SOURCE_CONNECT

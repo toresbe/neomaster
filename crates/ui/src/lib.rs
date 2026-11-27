@@ -10,6 +10,7 @@ pub mod assets;
 mod draw;
 pub mod fake;
 pub mod idle;
+pub mod settings_menu;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,6 +47,11 @@ pub enum Effect {
     StopLocalPlayback,
     /// The keyboard's standby key (the panel itself has none; see the open questions).
     Standby,
+    /// The SETTINGS menu opened: the core should refresh [`Ui::set_facts`].
+    SettingsOpened,
+    /// A choice was made in the SETTINGS menu: these are the settings now. The core saves them
+    /// and applies what changed.
+    SettingsChanged(Box<settings::Settings>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -79,9 +85,8 @@ enum Root {
     Artists,
     Covers,
     Mode,
-    Settings(&'static [&'static str]),
-    SystemInfo,
-    NetworkInfo,
+    /// A SETTINGS section; its content is [`settings::menu`]'s.
+    Settings(settings::menu::SectionId),
 }
 
 /// N.MUSIC as captured: now-playing at both ends, the lists in between.
@@ -101,30 +106,46 @@ pub fn n_music_zones() -> Vec<Zone> {
     ]
 }
 
-/// SETTINGS, as captured (the normal menu, not the hidden one). The zone boundaries are not
-/// measured: they are the midpoints between the labels' places on the arc, mapped back to pointer
-/// positions with the slope measured in N.MUSIC (0.83 degrees per step).
-pub fn settings_zones() -> Vec<Zone> {
+/// SETTINGS: the normal menu's 7 sections or the hidden menu's 9, with MODE above them and
+/// now-playing at both ends. The normal menu's boundaries are the midpoints between the labels'
+/// places on the arc, mapped back with the slope measured in N.MUSIC (0.83 degrees per step); the
+/// hidden menu's are fitted to the pointer positions captured there (84 SYSTEM INFO, 79 SYSTEM
+/// SETTINGS, 75 MAINTENANCE, 71 and 66 MUSIC SERVICES, 61 SERVICE SETTINGS, 56 and 52 PRODUCT
+/// INFO, 46 NETWORK INFO, 41 NETWORK SETTINGS, 36 ROLES).
+pub fn settings_zones(hidden: bool) -> Vec<Zone> {
+    use settings::menu::SectionId::*;
     use ViewKind::*;
-    let z = |name, lo, hi, kind, root| Zone { name, lo, hi, kind, root };
-    vec![
-        z("NOW PLAYING", 0, 15, NowPlaying, Root::None),
-        z("ROLES", 16, 38, Menu, Root::Settings(&["AUDIO MASTER", "AM OPTION"])),
-        z("NETWORK INFO", 39, 46, Info, Root::NetworkInfo),
-        z("SERVICE SETTINGS", 47, 53, Menu, Root::Settings(&["N.RADIO BUFFER", "DISABLE MOTS"])),
-        z("MUSIC SERVICES", 54, 62, Menu, Root::Settings(&["SPOTIFY"])),
-        z(
-            "MAINTENANCE",
-            63,
-            71,
-            Menu,
-            Root::Settings(&["UPDATE SOFTWARE", "AUTOMATIC SOFTWARE UPDATE", "LATEST RELEASE INFORMATION", "ABOUT"]),
-        ),
-        z("SYSTEM SETTINGS", 72, 79, Menu, Root::Settings(&["LANGUAGE", "TIME ZONE", "TIME"])),
-        z("SYSTEM INFO", 80, 87, Info, Root::SystemInfo),
-        z("MODE", 88, 99, Menu, Root::Mode),
-        z("NOW PLAYING", 100, 127, NowPlaying, Root::None),
-    ]
+    let ranges: &[(settings::menu::SectionId, u8, u8)] = if hidden {
+        &[
+            (Roles, 16, 38),
+            (NetworkSettings, 39, 43),
+            (NetworkInfo, 44, 48),
+            (ProductInfo, 49, 57),
+            (ServiceSettings, 58, 63),
+            (MusicServices, 64, 72),
+            (Maintenance, 73, 76),
+            (SystemSettings, 77, 81),
+            (SystemInfo, 82, 87),
+        ]
+    } else {
+        &[
+            (Roles, 16, 38),
+            (NetworkInfo, 39, 46),
+            (ServiceSettings, 47, 53),
+            (MusicServices, 54, 62),
+            (Maintenance, 63, 71),
+            (SystemSettings, 72, 79),
+            (SystemInfo, 80, 87),
+        ]
+    };
+    let mut v = vec![Zone { name: "NOW PLAYING", lo: 0, hi: 15, kind: NowPlaying, root: Root::None }];
+    for &(id, lo, hi) in ranges {
+        let kind = if matches!(id, SystemInfo | ProductInfo | NetworkInfo) { Info } else { Menu };
+        v.push(Zone { name: id.title(), lo, hi, kind, root: Root::Settings(id) });
+    }
+    v.push(Zone { name: "MODE", lo: 88, hi: 99, kind: Menu, root: Root::Mode });
+    v.push(Zone { name: "NOW PLAYING", lo: 100, hi: 127, kind: NowPlaying, root: Root::None });
+    v
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,6 +175,7 @@ impl Level {
 /// The long-GO menu: four colour favourites, ADD TO QUEUE (where it opens), then playlists.
 const CONTEXT_ENTRIES: [&str; 10] = ["RED", "GREEN", "YELLOW", "BLUE", "ADD TO  QUEUE", "01", "02", "03", "04", "05"];
 const CONTEXT_DEFAULT: usize = 4;
+/// The MODE list when no settings say otherwise ([`Ui::set_settings`] relabels it).
 const SOURCES: [&str; 4] = ["N.MUSIC", "N.RADIO", "A.AUX", "SETTINGS"];
 
 /// A change of view: the old content fades out, the screen stays black, the new content fades
@@ -203,6 +225,10 @@ pub struct Ui {
     idle_now_playing: bool,
     /// Return to now-playing, the standby tick and blank-screen standby, as the stock UI does.
     idle: Idle,
+    /// The MODE list, top to bottom.
+    sources: Vec<&'static str>,
+    /// The SETTINGS menu and the settings it shows.
+    settings_menu: settings_menu::SettingsMenu,
 }
 
 pub const MAX_VOLUME: u8 = 90;
@@ -237,6 +263,8 @@ impl Ui {
             switch: None,
             idle_now_playing: false,
             idle: Idle::new(IdleConfig::default(), Time::ZERO),
+            sources: SOURCES.to_vec(),
+            settings_menu: settings_menu::SettingsMenu::default(),
         };
         ui.reset_stacks();
         ui
@@ -257,7 +285,7 @@ impl Ui {
             l
         };
         match root {
-            Root::None | Root::SystemInfo | Root::NetworkInfo => Level::new(vec![]),
+            Root::None => Level::new(vec![]),
             Root::Queue => Level::new(self.queue.iter().map(|t| Item::Track(*t)).collect()),
             Root::Favourites => {
                 Level::new(["RED", "GREEN", "YELLOW", "BLUE", "RECENTLY ADDED"].into_iter().map(Item::Label).collect())
@@ -278,8 +306,9 @@ impl Ui {
                 }
             }
             Root::Artists => sorted(Level::new((0..lib.artists.len()).map(Item::Artist).collect())),
-            Root::Mode => Level::new(SOURCES.into_iter().map(Item::Source).collect()),
-            Root::Settings(items) => Level::new(items.iter().copied().map(Item::Label).collect()),
+            Root::Mode => Level::new(self.sources.iter().copied().map(Item::Source).collect()),
+            // the settings sections keep their own place (settings_menu)
+            Root::Settings(_) => Level::new(vec![]),
         }
     }
 
@@ -331,7 +360,7 @@ impl Ui {
         }
     }
 
-    fn in_settings(&self) -> bool {
+    pub fn in_settings(&self) -> bool {
         self.zones.iter().any(|z| matches!(z.root, Root::Settings(_)))
     }
 
@@ -339,8 +368,7 @@ impl Ui {
         match item {
             Item::Artist(a) => Some(Level::new(self.lib.artists[a].albums.iter().map(|x| Item::Album(*x)).collect())),
             Item::Album(a) => Some(Level::new(self.lib.albums[a].tracks.iter().map(|x| Item::Track(*x)).collect())),
-            // settings pages are not built yet
-            Item::Label(_) if !self.in_settings() => Some(Level::new(vec![])),
+            Item::Label(_) => Some(Level::new(vec![])),
             _ => None,
         }
     }
@@ -384,6 +412,9 @@ impl Ui {
                 self.pointer = p;
                 self.pointer_drawn = p as f32;
             }
+            return fx;
+        }
+        if let Some(fx) = self.settings_input(input, now) {
             return fx;
         }
         match input {
@@ -527,18 +558,24 @@ impl Ui {
                 // SETTINGS swaps the arc's zones for the settings pages; any real source swaps
                 // them back.
                 let settings = s == "SETTINGS";
+                let mut fx = vec![];
                 if settings != self.in_settings() {
-                    self.zones = if settings { settings_zones() } else { n_music_zones() };
+                    let hidden = settings && self.take_settings_combo(now);
+                    self.zones = if settings { settings_zones(hidden) } else { n_music_zones() };
                     self.reset_stacks();
                     // MODE keeps its cursor where it was
                     if let Some(z) = self.zones.iter().position(|z| z.root == Root::Mode) {
-                        let i = SOURCES.iter().position(|x| *x == s).unwrap_or(0);
+                        let i = self.sources.iter().position(|x| *x == s).unwrap_or(0);
                         self.stacks[z][0].cursor = i;
                         self.stacks[z][0].scroll = i as f32;
                     }
                     self.switch = Some(Switch { from: None, start: now });
+                    if settings {
+                        fx.extend(self.settings_opened(hidden));
+                    }
                 }
-                vec![Effect::SelectSource(s)]
+                fx.push(Effect::SelectSource(s));
+                fx
             }
             Some(item @ (Item::Track(_) | Item::Album(_) | Item::Artist(_))) => {
                 let t = self.tracks_of(item);
@@ -881,7 +918,7 @@ mod tests {
         ui.input(Input::MenuWheel(45), ms(1)); // to SETTINGS
         ui.input(Input::Pressed(Button::Go), ms(2));
         let fx = ui.input(Input::Released(Button::Go), ms(3));
-        assert_eq!(fx, vec![Effect::SelectSource("SETTINGS")]);
+        assert_eq!(fx, vec![Effect::SettingsOpened, Effect::SelectSource("SETTINGS")]);
         ui.input(Input::Pointer(75), ms(4));
         assert_eq!(ui.zone().name, "SYSTEM SETTINGS");
         ui.input(Input::Pointer(92), ms(5));

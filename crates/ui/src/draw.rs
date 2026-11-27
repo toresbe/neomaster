@@ -66,7 +66,7 @@ fn arc_x(y: f32) -> f32 {
 }
 
 /// `text` cut to `max` px at `size`, ending in an ellipsis if it was cut.
-fn fit(font: &mut Font, text: &str, size: u16, max: f32) -> String {
+pub(crate) fn fit(font: &mut Font, text: &str, size: u16, max: f32) -> String {
     if font.width(text, size) as f32 <= max {
         return text.to_string();
     }
@@ -170,15 +170,24 @@ impl Ui {
         let phase = self.phase(now);
         if phase.chrome > 0.0 {
             self.paint_arc(s, phase.chrome);
-            let art = self.playing_art_small();
-            s.image(&art, Rect::new(20, 343, 82, 82), phase.chrome);
+            if self.in_settings() {
+                crate::settings_menu::paint_icon(s, phase.chrome);
+            } else {
+                let art = self.playing_art_small();
+                s.image(&art, Rect::new(20, 343, 82, 82), phase.chrome);
+            }
         }
         if let Some((z, o)) = phase.content {
+            if let Root::Settings(id) = self.zones[z].root {
+                self.paint_settings(s, id, o);
+                self.paint_volume(s, now);
+                return;
+            }
             match self.zones[z].kind {
                 ViewKind::NowPlaying => self.paint_now_playing(s, o),
                 ViewKind::List | ViewKind::Menu => self.paint_list(s, z, o, now),
                 ViewKind::Covers => self.paint_covers(s, z, o, phase.placeholders),
-                ViewKind::Info => self.paint_info(s, z, o),
+                ViewKind::Info => {}
             }
         }
         self.paint_volume(s, now);
@@ -326,7 +335,16 @@ impl Ui {
 
     /// One row on the list curve. `d` is its distance from the centre row, in rows.
     #[allow(clippy::too_many_arguments)]
-    fn paint_row(&mut self, s: &mut Scene, d: f32, text: &str, colour: Color, centre_colour: Color, opacity: f32, marker: bool) {
+    pub(crate) fn paint_row(
+        &mut self,
+        s: &mut Scene,
+        d: f32,
+        text: &str,
+        colour: Color,
+        centre_colour: Color,
+        opacity: f32,
+        marker: bool,
+    ) {
         let t = (1.0 - d.abs()).max(0.0);
         let (x, y) = polar(LIST_R + (LIST_R_CENTRE - LIST_R) * t, d * LIST_STEP);
         if !(-20.0..=788.0).contains(&y) {
@@ -362,7 +380,6 @@ impl Ui {
         let current = level.items.get(cursor).copied();
         let rows: Vec<(usize, Item)> =
             level.items.iter().enumerate().filter(|(i, _)| (*i as f32 - scroll).abs() < 5.0).map(|(i, it)| (i, *it)).collect();
-        let settings = matches!(self.zones[z].root, Root::Settings(_));
         if let Some(item) = current {
             self.paint_selection(s, item, opacity, false);
         }
@@ -375,8 +392,7 @@ impl Ui {
         }
         for (i, item) in rows {
             let label = self.label(item);
-            // options that need the unit to be audio master are greyed out, as captured
-            let colour = if settings && label == "AM OPTION" { ITEM_GREY } else { WHITE };
+            let colour = WHITE;
             let marker = self.is_playing(item);
             self.paint_row(s, i as f32 - scroll, &label, colour, colour, opacity, marker);
         }
@@ -427,26 +443,15 @@ impl Ui {
         }
     }
 
-    fn info_rows(&self, z: usize) -> Vec<(&'static str, String)> {
-        match self.zones[z].root {
-            Root::SystemInfo => vec![("SOFTWARE", format!("NEOMASTER {}", env!("CARGO_PKG_VERSION")))],
-            Root::NetworkInfo => {
-                let host = std::fs::read_to_string("/etc/hostname").map(|h| h.trim().to_string()).unwrap_or_default();
-                vec![("HOST NAME", host)]
-            }
-            _ => vec![],
-        }
-    }
-
-    fn paint_info(&mut self, s: &mut Scene, z: usize, opacity: f32) {
-        let rows = self.info_rows(z);
+    /// A two-column key/value page (the info sections).
+    pub(crate) fn paint_info(&mut self, s: &mut Scene, rows: &[(String, String)], opacity: f32) {
         let n = rows.len() as f32;
         let centre = if rows.len() > 1 { CY + 8.0 } else { CY };
-        for (i, (k, v)) in rows.into_iter().enumerate() {
+        for (i, (k, v)) in rows.iter().enumerate() {
             let y = centre + (i as f32 - (n - 1.0) / 2.0) * 33.0;
             let base = (y + 5.0).round() as i32;
-            s.text(340, base, SMALL as u16, WHITE.with_opacity(opacity), Align::Left, k);
-            let v = fit(&mut self.font, &v, SMALL as u16, 380.0);
+            s.text(340, base, SMALL as u16, WHITE.with_opacity(opacity), Align::Left, k.clone());
+            let v = fit(&mut self.font, v, SMALL as u16, 380.0);
             s.text(616, base, SMALL as u16, WHITE.with_opacity(opacity), Align::Left, v);
         }
     }

@@ -5,7 +5,7 @@
 //! `cards_bm5.txt` is the BeoMaster 5 itself (Debian 10, 2026-11-27): its A.AUX input is a
 //! built-in TI PCM2902 (USB 08bb:2902) next to the VIA VT1708 onboard audio.
 
-use a_aux::device::{find_usb_audio_codec, is_usb_audio_codec, parse_cards};
+use a_aux::device::{find_card, find_usb_audio_codec, is_usb_audio_codec, parse_cards};
 use a_aux::loopback::LoopbackConfig;
 use a_aux::{AuxSource, Card, Effect};
 
@@ -51,6 +51,15 @@ fn finds_the_codec_card() {
     assert_eq!(card.id, "CODEC");
     assert_eq!(card.capture_device(), "plughw:CARD=CODEC,DEV=0");
     assert_eq!(find_usb_audio_codec(&parse_cards(NO_CODEC)), None);
+}
+
+#[test]
+fn settings_can_name_the_card() {
+    let cards = parse_cards(NO_CODEC);
+    assert_eq!(find_card(&cards, Some("EVO8")).map(|c| c.id), Some("EVO8".into()));
+    assert_eq!(find_card(&cards, Some("nope")), None);
+    assert_eq!(find_card(&cards, Some("")), None, "empty = automatic, and there is no codec here");
+    assert_eq!(find_card(&parse_cards(PCM2902), None).map(|c| c.id), Some("CODEC".into()));
 }
 
 fn codec() -> Card {

@@ -1,0 +1,13 @@
+[package]
+name = "settings"
+description = "neomaster's persisted settings: one typed, versioned, atomically saved config, and the stock SETTINGS menu model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+masterlink.workspace = true
+log.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "1"

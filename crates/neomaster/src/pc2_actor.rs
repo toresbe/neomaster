@@ -130,7 +130,7 @@ pub enum SessionEnd {
 /// Run one session with an open device: start it up as `mode`, then pump packets both ways
 /// until it goes away or the core stops.
 pub async fn run_session(
-    mode: pc2::Mode,
+    mode: &mut pc2::Mode,
     node_address: u8,
     mut usb: UsbPipes,
     cmds: &mut mpsc::UnboundedReceiver<Pc2Cmd>,
@@ -138,7 +138,7 @@ pub async fn run_session(
 ) -> SessionEnd {
     let epoch = Instant::now();
     let now = || epoch.elapsed();
-    let mut pc2 = pc2::Pc2::new(mode, node_address);
+    let mut pc2 = pc2::Pc2::new(*mode, node_address);
     let tap = Tap::global();
     tap.emit("pc2_session", || serde_json::json!({ "state": "open", "mode": format!("{mode:?}") }));
     // Commands queued while there was no device are stale (routing for a PC2 that rebooted).
@@ -174,6 +174,20 @@ pub async fn run_session(
                         });
                     }
                 }
+                Some(Pc2Cmd::Restart(m)) => {
+                    info!("PC2: starting up again as {m:?}");
+                    tap.emit("pc2_session", || serde_json::json!({ "state": "restart", "mode": format!("{m:?}") }));
+                    pc2.close(now());
+                    if flush(&mut pc2, &usb.tx, &tap).await.is_err() {
+                        break SessionEnd::Gone;
+                    }
+                    *mode = m;
+                    pc2 = pc2::Pc2::new(m, node_address);
+                    pc2.init(now());
+                    if events.send(Event::Pc2Connected).is_err() {
+                        break SessionEnd::Shutdown;
+                    }
+                }
                 None => {
                     pc2.close(now());
                     let _ = flush(&mut pc2, &usb.tx, &tap).await;
@@ -202,7 +216,7 @@ async fn flush(pc2: &mut pc2::Pc2, tx: &mpsc::Sender<Vec<u8>>, tap: &Tap) -> Res
 /// Keep a session with the PC2 running: open it with `open`, run it, and when it goes away look
 /// for it again every [`REOPEN_DELAY`]. Ends when the core drops its command sender.
 pub async fn supervise<F, Fut>(
-    mode: pc2::Mode,
+    mut mode: pc2::Mode,
     node_address: u8,
     mut open: F,
     mut cmds: mpsc::UnboundedReceiver<Pc2Cmd>,
@@ -217,7 +231,7 @@ pub async fn supervise<F, Fut>(
             Ok(usb) => {
                 warned = false;
                 info!("PC2 open, starting up as {mode:?}");
-                if run_session(mode, node_address, usb, &mut cmds, &events).await == SessionEnd::Shutdown {
+                if run_session(&mut mode, node_address, usb, &mut cmds, &events).await == SessionEnd::Shutdown {
                     return;
                 }
             }
@@ -231,7 +245,12 @@ pub async fn supervise<F, Fut>(
         let wake = tokio::time::Instant::now() + REOPEN_DELAY;
         loop {
             tokio::select! {
-                cmd = cmds.recv() => if cmd.is_none() { return },
+                cmd = cmds.recv() => match cmd {
+                    None => return,
+                    // No device: remember the mode for the next open.
+                    Some(Pc2Cmd::Restart(m)) => mode = m,
+                    Some(_) => {}
+                },
                 _ = sleep_until(wake) => break,
             }
         }
@@ -316,7 +335,8 @@ mod tests {
         let (pipes, _sim) = sim_pc2::spawn(Some(obs_tx));
         let (event_tx, mut events) = mpsc::unbounded_channel();
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
-        let session = tokio::spawn(async move { run_session(pc2::Mode::AudioMaster, 0, pipes, &mut cmd_rx, &event_tx).await });
+        let session =
+            tokio::spawn(async move { run_session(&mut pc2::Mode::AudioMaster, 0, pipes, &mut cmd_rx, &event_tx).await });
         assert!(matches!(next_event(&mut events).await, Event::Pc2Connected));
         drop(cmd_tx);
         assert_eq!(session.await.unwrap(), SessionEnd::Shutdown);
@@ -333,5 +353,45 @@ mod tests {
             all.push(m);
         }
         assert_eq!(all.last().unwrap(), &vec![0xa7]);
+    }
+
+    /// AUDIO MASTER changed in the settings: the PC2 is closed and started up again in the new
+    /// mode on the same device, and the core hears Pc2Connected again.
+    #[tokio::test(start_paused = true)]
+    async fn restart_reinitialises_in_the_new_mode() {
+        let (obs_tx, mut obs) = mpsc::unbounded_channel();
+        let (pipes, _sim) = sim_pc2::spawn(Some(obs_tx));
+        let (event_tx, mut events) = mpsc::unbounded_channel();
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+        let session = tokio::spawn(async move {
+            let mut mode = pc2::Mode::SourceCenter;
+            let end = run_session(&mut mode, 0, pipes, &mut cmd_rx, &event_tx).await;
+            (end, mode)
+        });
+        assert!(matches!(next_event(&mut events).await, Event::Pc2Connected));
+        assert_eq!(obs.recv().await.unwrap(), vec![0xf1]);
+        let sc_address = obs.recv().await.unwrap();
+        obs.recv().await.unwrap(); // option
+        cmd_tx.send(Pc2Cmd::Restart(pc2::Mode::AudioMaster)).unwrap();
+        // (the first start-up's replies may still arrive as Pc2 events)
+        loop {
+            match next_event(&mut events).await {
+                Event::Pc2(_) => continue,
+                e => break assert!(matches!(e, Event::Pc2Connected), "{e:?}"),
+            }
+        }
+        let mut seen = Vec::new();
+        while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(50), obs.recv()).await {
+            seen.push(m);
+        }
+        let close = seen.iter().position(|m| m == &vec![0xa7]).expect("close sent");
+        let f1 = seen.iter().position(|m| m == &vec![0xf1]).expect("init again");
+        assert!(close < f1, "{seen:02x?}");
+        let am_address = &seen[f1 + 1];
+        assert_ne!(am_address, &sc_address, "the default node address follows the mode");
+        drop(cmd_tx);
+        let (end, mode) = session.await.unwrap();
+        assert_eq!(end, SessionEnd::Shutdown);
+        assert_eq!(mode, pc2::Mode::AudioMaster);
     }
 }

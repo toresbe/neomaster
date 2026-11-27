@@ -19,6 +19,7 @@ use ui::{Effect, Ui};
 use crate::debug::{self, Inject, Tap};
 use crate::link::{self, AppEffect, Link, Outputs, Pc2Cmd};
 use crate::radio_actor::{NoRadio, RadioCmd, RadioOut};
+use crate::settings_rt::{self, SettingsOut};
 
 /// Time since the core started.
 pub type Time = Duration;
@@ -39,6 +40,8 @@ pub enum Event {
     Pc2Disconnected,
     /// The A.AUX card poll (every [`AUX_POLL`]): the USB sound card, or `None` if absent.
     AuxCard(Option<a_aux::Card>),
+    /// The machine facts for the SETTINGS menu, gathered off the core task.
+    Facts(Box<settings::menu::Facts>),
     /// The screen needs redrawing (window exposed).
     Redraw,
     /// The N.RADIO actor matched preset `number`'s name to this Music Assistant station.
@@ -64,6 +67,8 @@ pub trait AuxOut: Send {
     fn apply(&mut self, effect: &a_aux::Effect);
     /// The loop exited by itself since the last call.
     fn ended(&mut self) -> bool;
+    /// The A.AUX settings changed (they apply from the next start of the loop).
+    fn configure(&mut self, _settings: &settings::Aux) {}
 }
 
 impl AuxOut for a_aux::loopback::Loopback {
@@ -72,6 +77,9 @@ impl AuxOut for a_aux::loopback::Loopback {
     }
     fn ended(&mut self) -> bool {
         a_aux::loopback::Loopback::ended(self)
+    }
+    fn configure(&mut self, settings: &settings::Aux) {
+        self.set_config(settings_rt::loopback_config(settings));
     }
 }
 
@@ -116,6 +124,12 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
     radio_playing: u8,
     /// A preset picked on the panel while N.RADIO waits to be connected (link source role).
     radio_pending: Option<u8>,
+    settings: settings::Settings,
+    settings_out: Option<Box<dyn SettingsOut>>,
+    /// The core's own event sender, for work it hands to a blocking thread.
+    events: Option<mpsc::UnboundedSender<Event>>,
+    /// The A.AUX card poll's card choice (settings `aux.card`).
+    aux_card_choice: Option<tokio::sync::watch::Sender<String>>,
 }
 
 impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
@@ -144,6 +158,10 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             radio_out: Box::new(NoRadio),
             radio_playing: 0,
             radio_pending: None,
+            settings: settings::Settings::default(),
+            settings_out: None,
+            events: None,
+            aux_card_choice: None,
         }
     }
 
@@ -159,6 +177,81 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
     pub fn with_tap(mut self, tap: Tap) -> Self {
         self.tap = tap;
         self
+    }
+
+    /// Run with these settings (the link given to [`Core::new`] should already follow them):
+    /// the UI shows them, changes made in the SETTINGS menu go to `out`, and `events` is the
+    /// sender of the core's own event channel.
+    pub fn with_settings(
+        mut self,
+        settings: settings::Settings,
+        out: Box<dyn SettingsOut>,
+        events: mpsc::UnboundedSender<Event>,
+        aux_card_choice: Option<tokio::sync::watch::Sender<String>>,
+    ) -> Self {
+        self.aux_out.configure(&settings.aux);
+        self.ui.set_settings(settings.clone());
+        self.settings = settings;
+        self.apply_idle();
+        self.settings_out = Some(out);
+        self.events = Some(events);
+        self.aux_card_choice = aux_card_choice;
+        self
+    }
+
+    fn apply_idle(&mut self) {
+        let idle = &self.settings.idle;
+        let cfg = self.ui.idle_config();
+        cfg.return_after = idle.return_after();
+        cfg.standby_tick = idle.standby_tick();
+        cfg.playing_standby_after = idle.active_playback_timeout();
+    }
+
+    /// The SETTINGS menu changed something: save it and apply what can be applied live.
+    fn settings_changed(&mut self, new: settings::Settings) {
+        let old = std::mem::replace(&mut self.settings, new);
+        if let Some(out) = self.settings_out.as_mut() {
+            out.save(&self.settings);
+        }
+        if old.idle != self.settings.idle {
+            self.apply_idle();
+        }
+        if old.system.debug_logging != self.settings.system.debug_logging {
+            settings_rt::set_debug_logging(self.settings.system.debug_logging);
+        }
+        if old.aux != self.settings.aux {
+            self.aux_out.configure(&self.settings.aux);
+            if let Some(tx) = &self.aux_card_choice {
+                let _ = tx.send(self.settings.aux.card.clone());
+            }
+        }
+        if old.roles != self.settings.roles || old.link != self.settings.link {
+            // A new role or new source addresses: stop what plays, start the link glue and the
+            // PC2 over in the new configuration.
+            let cfg = link::Config::from_settings(&self.settings);
+            info!(
+                "Masterlink: now {:?}, SystemConfiguration {}, N.MUSIC {:#04x}, N.RADIO {:#04x}",
+                cfg.role, cfg.system_configuration, cfg.n_music, cfg.n_radio
+            );
+            let fx = self.aux.deselect();
+            self.aux_effects(fx);
+            let mode = cfg.pc2_mode();
+            self.link = Link::new(cfg);
+            if self.link.role() == LinkRole::SourceCenter {
+                self.ui.set_volume(NEUTRAL_VOLUME);
+                self.link.rebase_volume(NEUTRAL_VOLUME);
+            }
+            self.tap.emit("settings_roles", || json!({ "mode": format!("{mode:?}") }));
+            self.pc2_out.send(Pc2Cmd::Restart(mode));
+        }
+    }
+
+    fn refresh_facts(&mut self) {
+        let Some(events) = self.events.clone() else { return };
+        let s = self.settings.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = events.send(Event::Facts(Box::new(settings_rt::gather_facts(&s))));
+        });
     }
 
     fn aux_effects(&mut self, fx: Vec<a_aux::Effect>) {
@@ -233,6 +326,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             match &cmd {
                 Pc2Cmd::Telegram(t) => self.tap.emit("ml_out", || debug::telegram_fields(t)),
                 Pc2Cmd::Message(m) => self.tap.emit("pc2_out", || json!({ "raw": debug::hex(m) })),
+                Pc2Cmd::Restart(m) => self.tap.emit("pc2_restart", || json!({ "mode": format!("{m:?}") })),
             }
             self.pc2_out.send(cmd);
         }
@@ -296,6 +390,20 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         }
     }
 
+    /// A MODE list label as a local source: the slot names (A.MEM, CD, RADIO...) follow the
+    /// settings.
+    fn local_source(&self, label: &str) -> Option<LocalSource> {
+        use settings::names::Slot;
+        let slot = self.settings.roles.source_labels(true).into_iter().find(|(l, _)| *l == label).map(|(_, s)| s);
+        match slot {
+            Some(Slot::NMusic) => Some(LocalSource::NMusic),
+            Some(Slot::NRadio) => Some(LocalSource::NRadio),
+            // PC CD has no player in neomaster.
+            Some(_) => None,
+            None => link::local_source(label),
+        }
+    }
+
     fn now(&self) -> Time {
         self.epoch.elapsed()
     }
@@ -349,9 +457,11 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 }
                 Effect::Play(t) => info!("play {} track(s) (fake library; Music Assistant arrives in M3)", t.len()),
                 Effect::Enqueue(t) => info!("enqueue {} track(s)", t.len()),
+                Effect::SettingsOpened => self.refresh_facts(),
+                Effect::SettingsChanged(s) => self.settings_changed(*s),
                 Effect::SelectSource(s) => {
                     info!("select source {s}");
-                    if let Some(local) = link::local_source(s) {
+                    if let Some(local) = self.local_source(s) {
                         let out = self.link.select_source(local, now);
                         self.link_out(out, now);
                     }
@@ -451,6 +561,10 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     self.radio_save();
                 }
                 return false;
+            }
+            Event::Facts(f) => {
+                self.ui.set_facts(*f);
+                return self.ui.settings_open();
             }
             Event::Redraw => {}
             Event::Debug(i) => return self.inject(i, now),
@@ -638,16 +752,26 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
     }
 }
 
-/// Look for the A.AUX card every [`AUX_POLL`] and tell the core. Ends when the core is gone.
-pub async fn poll_aux_card(events: mpsc::UnboundedSender<Event>) {
+/// [`poll_aux_card`], with the card chosen in the settings (`aux.card`, an ALSA card id; empty
+/// = the first "USB Audio CODEC"). The choice can change while running.
+pub async fn poll_aux_card_choice(events: mpsc::UnboundedSender<Event>, choice: tokio::sync::watch::Receiver<String>) {
     let mut interval = tokio::time::interval(AUX_POLL);
     loop {
         interval.tick().await;
-        let card = tokio::task::spawn_blocking(a_aux::device::scan).await.unwrap_or(None);
+        let id = choice.borrow().clone();
+        let card = tokio::task::spawn_blocking(move || a_aux::device::scan_for(Some(id.as_str()).filter(|i| !i.is_empty())))
+            .await
+            .unwrap_or(None);
         if events.send(Event::AuxCard(card)).is_err() {
             return;
         }
     }
+}
+
+/// Look for the A.AUX card every [`AUX_POLL`] and tell the core. Ends when the core is gone.
+#[allow(dead_code)] // the binary uses poll_aux_card_choice; kept for callers without settings
+pub async fn poll_aux_card(events: mpsc::UnboundedSender<Event>) {
+    poll_aux_card_choice(events, tokio::sync::watch::channel(String::new()).1).await
 }
 
 #[cfg(test)]

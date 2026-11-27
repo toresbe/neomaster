@@ -54,6 +54,11 @@ impl Loopback {
         Loopback { config, child: None }
     }
 
+    /// New settings; they apply from the next start of the loop.
+    pub fn set_config(&mut self, config: LoopbackConfig) {
+        self.config = config;
+    }
+
     pub fn apply(&mut self, effect: &Effect) {
         match effect {
             Effect::Start { capture } => {

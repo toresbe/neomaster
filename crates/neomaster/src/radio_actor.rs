@@ -2,9 +2,9 @@
 //! preset file. The core stays sans-IO; it sends [`RadioCmd`]s here and hears back through
 //! [`Event::RadioResolved`] when a preset's name has been matched to an MA station.
 //!
-//! Configuration (until the settings file lands): `MA_URL`, `MA_TOKEN` and `NEOMASTER_MA_PLAYER`
-//! (the BM5's player / queue id in MA), the names the settings layer reads too. Without them
-//! N.RADIO tunes and logs but plays nothing.
+//! Configuration: the settings' `[music_assistant]` (`url`, `player_id`, and the token from
+//! `MA_TOKEN` or `token_file`); `MA_URL` and `NEOMASTER_MA_PLAYER` override them for a run.
+//! Without them N.RADIO tunes and logs but plays nothing.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -51,15 +51,24 @@ pub struct MaConfig {
 }
 
 impl MaConfig {
-    /// From `MA_URL`, `MA_TOKEN` and `NEOMASTER_MA_PLAYER`; `None` (with the reason) if one is
-    /// missing.
-    pub fn from_env() -> Result<Self, String> {
-        let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty()).ok_or(k.to_string());
-        let missing: Vec<String> = ["MA_URL", "MA_TOKEN", "NEOMASTER_MA_PLAYER"].iter().filter_map(|k| get(k).err()).collect();
+    /// From the settings (environment overrides already applied); `None` (with the reason) if
+    /// something is missing.
+    pub fn from_settings(s: &settings::MusicAssistant) -> Result<Self, String> {
+        let mut missing = Vec::new();
+        if s.url.trim().is_empty() {
+            missing.push("music_assistant.url (MA_URL)");
+        }
+        if s.player_id.trim().is_empty() {
+            missing.push("music_assistant.player_id (NEOMASTER_MA_PLAYER)");
+        }
+        let token = s.token();
+        if token.is_none() {
+            missing.push("MA_TOKEN or music_assistant.token_file");
+        }
         if !missing.is_empty() {
             return Err(format!("{} not set", missing.join(", ")));
         }
-        Ok(MaConfig { url: get("MA_URL")?, token: get("MA_TOKEN")?, queue_id: get("NEOMASTER_MA_PLAYER")? })
+        Ok(MaConfig { url: s.url.clone(), token: token.unwrap_or_default(), queue_id: s.player_id.clone() })
     }
 }
 
@@ -144,12 +153,13 @@ fn save(path: &std::path::Path, presets: &radio::Presets) {
 /// Load the presets and start the actor: returns the tuner and the core's command sender.
 pub fn spawn(
     rt: &tokio::runtime::Runtime,
+    music_assistant: &settings::MusicAssistant,
     events: mpsc::UnboundedSender<Event>,
 ) -> (radio::Tuner, mpsc::UnboundedSender<RadioCmd>) {
     let path = radio::store::default_path();
     let presets = radio::store::load(&path);
     info!("N.RADIO: {} preset(s) from {}", presets.presets.len(), path.display());
-    let ma = match MaConfig::from_env() {
+    let ma = match MaConfig::from_settings(music_assistant) {
         Ok(c) => Some(c),
         Err(why) => {
             info!("N.RADIO: Music Assistant not configured ({why}); presets tune but do not play");
