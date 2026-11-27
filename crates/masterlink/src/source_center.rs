@@ -174,6 +174,10 @@ impl SourceCenter {
                 host.stop_source();
             }
             self.source = src;
+            let request = ml::source_connect::parse_request(&t.payload);
+            if let Some(channel) = request.channel {
+                host.source_channel(src, channel);
+            }
             // As captured: STATUS SOURCE_CONNECT "connected" to the requester, our SOURCE_STATUS
             // to all link devices, PRI_SYSTEM_STATUS to the requester (which relays it to the room)
             host.send_telegram(Self::make(
