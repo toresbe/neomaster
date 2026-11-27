@@ -329,6 +329,21 @@ fn lock_take_before_video_source_and_hand_it_over() {
     assert!(!am.holds_bus_lock());
 }
 
+/// The holder answers TRANSFER_IMPOSSIBLE (STATUS 3, as BeoIpcML does while a local user still owns
+/// the key): that is not a grant, so we send no KEY_RECEIVED and wait for the lock timeout
+#[test]
+fn lock_transfer_impossible_is_not_a_grant() {
+    let mut host = FakeHost::default();
+    let mut am = AudioMaster::new(6);
+    am.set_lock_mode(LockMode::Software);
+    am.listen_to_video_source(&mut host, 0x0b, at(0.0));
+    host.sent.clear();
+    let refused = incoming(&[0xc1, 0x04, 0x01, 0x14, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x03, 0x01]);
+    am.handle(&mut host, &refused, at(0.02));
+    assert_eq!(host.sent.len(), 0);
+    assert!(!am.holds_bus_lock());
+}
+
 #[test]
 fn lock_nobody_holds_the_lock() {
     let mut host = FakeHost::default();
