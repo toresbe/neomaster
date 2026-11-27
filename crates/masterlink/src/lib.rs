@@ -13,11 +13,13 @@ pub mod host;
 pub mod protocol;
 pub mod source_center;
 pub mod telegram;
+pub mod track_info;
 
 pub use audio_master::{AudioMaster, BusState, LockMode};
 pub use host::{Effect, Effects, Host};
 pub use source_center::SourceCenter;
 pub use telegram::Telegram;
+pub use track_info::TrackInfo;
 
 /// A monotonic timestamp, as a duration since an arbitrary fixed epoch.
 pub type Time = std::time::Duration;
