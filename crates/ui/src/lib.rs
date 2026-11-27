@@ -10,6 +10,7 @@ pub mod assets;
 mod draw;
 pub mod fake;
 pub mod idle;
+pub mod library;
 pub mod settings_menu;
 
 use std::collections::HashMap;
@@ -20,9 +21,9 @@ use bs5_panel::{Button, Input, COUNTS_PER_STEP};
 use render::{Color, Image, Scene};
 
 pub use assets::Assets;
-use fake::Library;
 pub use idle::IdleConfig;
 use idle::{Idle, IdleAction};
+pub use library::{Cover, CoverSource, Library, NowPlaying, PlayRequest, QueueEntry};
 
 /// A monotonic timestamp, as a duration since an arbitrary fixed epoch.
 pub type Time = Duration;
@@ -32,10 +33,12 @@ pub type Time = Duration;
 pub enum Effect {
     /// One panel click (a list row, or the pointer crossing a zone).
     Click,
-    /// Play these tracks, the first one now (fake library track indices until M3).
-    Play(Vec<usize>),
-    /// Append to the play queue.
-    Enqueue(Vec<usize>),
+    /// Replace the play queue with this and play it.
+    Play(PlayRequest),
+    /// Append these (artist, album or track URIs) to the play queue.
+    Enqueue(Vec<String>),
+    /// Jump to this entry of the play queue.
+    PlayQueueIndex(usize),
     /// Absolute volume 0..=90, as the PC2 takes it.
     Volume(u8),
     SelectSource(&'static str),
@@ -153,6 +156,8 @@ enum Item {
     Artist(usize),
     Album(usize),
     Track(usize),
+    /// An entry of the play queue (index into the queue).
+    Queued(usize),
     Label(&'static str),
     Source(&'static str),
 }
@@ -164,12 +169,21 @@ struct Level {
     scroll: f32,
     /// Sorted by name, so the wheel shows the first letter while it turns.
     alphabetical: bool,
+    /// The album these tracks belong to (GO on one plays the album from that track).
+    container: Option<String>,
 }
 
 impl Level {
     fn new(items: Vec<Item>) -> Level {
-        Level { items, cursor: 0, scroll: 0.0, alphabetical: false }
+        Level { items, cursor: 0, scroll: 0.0, alphabetical: false, container: None }
     }
+}
+
+/// Art cache keys: an atlas slot, or a sleeve generated from an average colour.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ArtKey {
+    Slot(u32),
+    Rgb(u32),
 }
 
 /// The long-GO menu: four colour favourites, ADD TO QUEUE (where it opens), then playlists.
@@ -219,8 +233,8 @@ pub struct Ui {
     lib: Library,
     assets: Assets,
     font: render::Font,
-    /// Generated art for the fake library's albums.
-    art: HashMap<usize, Arc<Image>>,
+    /// Covers made into images so far (atlas slots, colour sleeves).
+    art: HashMap<ArtKey, Arc<Image>>,
     zones: Vec<Zone>,
     /// One navigation stack per zone, so leaving a zone and coming back returns to the same place.
     stacks: Vec<Vec<Level>>,
@@ -228,8 +242,8 @@ pub struct Ui {
     /// The pointer as drawn, easing towards `pointer`.
     pointer_drawn: f32,
     menu_counts: i32,
-    queue: Vec<usize>,
-    playing: Option<usize>,
+    queue: Vec<QueueEntry>,
+    now: Option<NowPlaying>,
     external: Option<External>,
     volume: u8,
     volume_shown_until: Time,
@@ -272,7 +286,7 @@ impl Ui {
             pointer_drawn: 64.0,
             menu_counts: 0,
             queue: Vec::new(),
-            playing: None,
+            now: None,
             external: None,
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
@@ -307,26 +321,28 @@ impl Ui {
         };
         match root {
             Root::None => Level::new(vec![]),
-            Root::Queue => Level::new(self.queue.iter().map(|t| Item::Track(*t)).collect()),
+            Root::Queue => Level::new((0..self.queue.len()).map(Item::Queued).collect()),
             Root::Favourites => {
                 Level::new(["RED", "GREEN", "YELLOW", "BLUE", "RECENTLY ADDED"].into_iter().map(Item::Label).collect())
             }
             Root::Titles => {
                 let mut t: Vec<usize> = (0..lib.tracks.len()).collect();
-                t.sort_by_cached_key(|i| lib.tracks[*i].title.to_lowercase());
+                t.sort_by(|a, b| lib.tracks[*a].sort.cmp(&lib.tracks[*b].sort));
                 sorted(Level::new(t.into_iter().map(Item::Track).collect()))
             }
             Root::Albums | Root::Covers => {
-                let mut a: Vec<usize> = (0..lib.albums.len()).collect();
-                a.sort_by_cached_key(|i| lib.albums[*i].title.to_lowercase());
-                let l = Level::new(a.into_iter().map(Item::Album).collect());
+                let l = Level::new(lib.albums_in_order().into_iter().map(Item::Album).collect());
                 if root == Root::Albums {
                     sorted(l)
                 } else {
                     l
                 }
             }
-            Root::Artists => sorted(Level::new((0..lib.artists.len()).map(Item::Artist).collect())),
+            Root::Artists => {
+                let mut a: Vec<usize> = (0..lib.artists.len()).collect();
+                a.sort_by(|x, y| lib.artists[*x].sort.cmp(&lib.artists[*y].sort));
+                sorted(Level::new(a.into_iter().map(Item::Artist).collect()))
+            }
             Root::Mode => Level::new(self.sources.iter().copied().map(Item::Source).collect()),
             // the settings sections keep their own place (settings_menu)
             Root::Settings(_) => Level::new(vec![]),
@@ -368,16 +384,19 @@ impl Ui {
             Item::Artist(a) => self.lib.artists[a].name.clone(),
             Item::Album(a) => self.lib.albums[a].title.clone(),
             Item::Track(t) => self.lib.tracks[t].title.clone(),
+            Item::Queued(q) => self.queue.get(q).map(|e| e.title.clone()).unwrap_or_default(),
             Item::Label(s) | Item::Source(s) => s.to_string(),
         }
     }
 
-    fn tracks_of(&self, item: Item) -> Vec<usize> {
+    /// The Music Assistant URI of a browsable item.
+    fn uri_of(&self, item: Item) -> Option<&str> {
         match item {
-            Item::Track(t) => vec![t],
-            Item::Album(a) => self.lib.albums[a].tracks.clone(),
-            Item::Artist(a) => self.lib.artists[a].albums.iter().flat_map(|al| self.lib.albums[*al].tracks.clone()).collect(),
-            _ => vec![],
+            Item::Artist(a) => Some(&self.lib.artists[a].uri),
+            Item::Album(a) => Some(&self.lib.albums[a].uri),
+            Item::Track(t) => Some(&self.lib.tracks[t].uri),
+            Item::Queued(q) => self.queue.get(q).and_then(|e| e.uri.as_deref()),
+            _ => None,
         }
     }
 
@@ -388,7 +407,11 @@ impl Ui {
     fn drill(&self, item: Item) -> Option<Level> {
         match item {
             Item::Artist(a) => Some(Level::new(self.lib.artists[a].albums.iter().map(|x| Item::Album(*x)).collect())),
-            Item::Album(a) => Some(Level::new(self.lib.albums[a].tracks.iter().map(|x| Item::Track(*x)).collect())),
+            Item::Album(a) => {
+                let mut l = Level::new(self.lib.albums[a].tracks.iter().map(|x| Item::Track(*x)).collect());
+                l.container = Some(self.lib.albums[a].uri.clone());
+                Some(l)
+            }
             Item::Label(_) => Some(Level::new(vec![])),
             _ => None,
         }
@@ -424,7 +447,7 @@ impl Ui {
     pub fn input(&mut self, input: Input, now: Time) -> Vec<Effect> {
         let mut fx = Vec::new();
         let before = self.zone_index();
-        let source_active = self.playing.is_some() || self.idle.playing();
+        let source_active = self.now.as_ref().is_some_and(|n| n.playing) || self.idle.playing();
         if self.idle.input(now, source_active) {
             // Any input while blanked turns the backlight on and is otherwise swallowed, so the
             // first touch does not also scroll.
@@ -476,10 +499,7 @@ impl Ui {
                 if let Some(entry) = self.context.take() {
                     if entry == CONTEXT_DEFAULT {
                         if let Some(item) = self.current_item() {
-                            let t = self.tracks_of(item);
-                            self.queue.extend(&t);
-                            self.refresh_queue();
-                            fx.push(Effect::Enqueue(t));
+                            fx.extend(self.enqueue(item));
                         }
                     }
                 } else if !self.go_long {
@@ -515,7 +535,7 @@ impl Ui {
         if self.idle.blanked() {
             return vec![Effect::Standby];
         }
-        let source_active = self.playing.is_some() || self.idle.playing();
+        let source_active = self.now.as_ref().is_some_and(|n| n.playing) || self.idle.playing();
         self.idle.input(now, source_active);
         self.context = None;
         if self.zone().kind != ViewKind::NowPlaying {
@@ -625,11 +645,31 @@ impl Ui {
                 fx
             }
             Some(item @ (Item::Track(_) | Item::Album(_) | Item::Artist(_))) => {
-                let t = self.tracks_of(item);
-                self.playing = t.first().copied();
-                // The fake library plays at once; with Music Assistant the core reports playback.
+                let Some(uri) = self.uri_of(item).map(str::to_owned) else { return vec![] };
+                let container = self.level().and_then(|l| l.container.clone());
+                let req = match (item, container) {
+                    (Item::Track(_), Some(album)) => PlayRequest { uri: album, start: Some(uri) },
+                    _ => PlayRequest { uri, start: None },
+                };
+                // Show it at once; Music Assistant's own report replaces this when it comes.
+                self.now = self.guess_now_playing(item);
                 self.idle.set_playing(true);
-                vec![Effect::Play(t)]
+                vec![Effect::Play(req)]
+            }
+            Some(Item::Queued(q)) => {
+                if let Some(e) = self.queue.get(q) {
+                    let np = NowPlaying {
+                        title: e.title.clone(),
+                        artist: e.artist.clone(),
+                        uri: e.uri.clone(),
+                        cover: e.cover,
+                        playing: true,
+                        ..Default::default()
+                    };
+                    self.now = Some(np);
+                }
+                self.idle.set_playing(true);
+                vec![Effect::PlayQueueIndex(q)]
             }
             _ => vec![],
         }
@@ -716,6 +756,172 @@ impl Ui {
         Self::blank_effects().to_vec()
     }
 
+    /// Show another library (the mirror changed). Every list keeps its place where the item
+    /// it was on still exists.
+    pub fn set_library(&mut self, lib: Library) {
+        // per zone: for each level, the URI under its cursor
+        let saved: Vec<Vec<Option<String>>> = self
+            .stacks
+            .iter()
+            .map(|st| st.iter().map(|l| l.items.get(l.cursor).and_then(|i| self.uri_of(*i)).map(str::to_owned)).collect())
+            .collect();
+        self.lib = lib;
+        self.art.clear();
+        self.reset_stacks();
+        for (z, path) in saved.into_iter().enumerate() {
+            if matches!(self.zones[z].root, Root::Queue | Root::Mode | Root::Settings(_)) {
+                continue;
+            }
+            for (depth, uri) in path.iter().enumerate() {
+                let Some(uri) = uri else { break };
+                let Some(level) = self.stacks[z].get_mut(depth) else { break };
+                let found = level.items.iter().position(|i| match *i {
+                    Item::Artist(a) => self.lib.artists[a].uri == *uri,
+                    Item::Album(a) => self.lib.albums[a].uri == *uri,
+                    Item::Track(t) => self.lib.tracks[t].uri == *uri,
+                    _ => false,
+                });
+                let Some(pos) = found else { break };
+                level.cursor = pos;
+                level.scroll = pos as f32;
+                if depth + 1 < path.len() {
+                    let item = level.items[pos];
+                    match self.drill(item) {
+                        Some(next) => self.stacks[z].push(next),
+                        None => break,
+                    }
+                }
+            }
+        }
+        if let Some(np) = self.now.as_mut() {
+            // the cover's atlas slot may have moved
+            np.cover = Self::cover_in(&self.lib, np.uri.as_deref(), np.album_uri.as_deref()).unwrap_or(np.cover);
+        }
+    }
+
+    pub fn library(&self) -> &Library {
+        &self.lib
+    }
+
+    /// A cover from the library for a track or album URI.
+    fn cover_in(lib: &Library, track: Option<&str>, album: Option<&str>) -> Option<Cover> {
+        let from_album = album.and_then(|a| lib.album_by_uri(a)).map(|a| lib.albums[a].cover);
+        let from_track = track.and_then(|t| lib.track_by_uri(t)).map(|t| lib.tracks[t].cover);
+        from_album.filter(|c| c.slot.is_some()).or(from_track.filter(|c| c.slot.is_some())).or(from_album).or(from_track)
+    }
+
+    /// What Music Assistant says plays now (`None`: nothing queued). Its cover comes from the
+    /// library when the report has none of its own.
+    pub fn set_now_playing(&mut self, np: Option<NowPlaying>) {
+        self.now = np.map(|mut np| {
+            if np.cover == Cover::default() {
+                np.cover = Self::cover_in(&self.lib, np.uri.as_deref(), np.album_uri.as_deref()).unwrap_or_default();
+            }
+            // keep the large cover while the same item plays (MA reports every state change)
+            if np.art.is_none() {
+                if let Some(old) = &self.now {
+                    if old.uri == np.uri && old.cover == np.cover {
+                        np.art = old.art.clone();
+                    }
+                }
+            }
+            np
+        });
+        let playing = self.now.as_ref().is_some_and(|n| n.playing);
+        self.idle.set_playing(playing);
+    }
+
+    /// The large cover for the now-playing view, fetched for the item with this URI.
+    pub fn set_now_playing_art(&mut self, uri: Option<&str>, art: Arc<Image>) {
+        if let Some(np) = self.now.as_mut().filter(|n| n.uri.as_deref() == uri) {
+            np.art = Some(art);
+        }
+    }
+
+    pub fn now_playing(&self) -> Option<&NowPlaying> {
+        self.now.as_ref()
+    }
+
+    /// The play queue as Music Assistant has it.
+    pub fn set_queue(&mut self, queue: Vec<QueueEntry>) {
+        self.queue = queue;
+        self.refresh_queue();
+    }
+
+    /// The album `delta` albums from the one playing, in ALBUMS order (the remote's album
+    /// step). From nothing, or an album outside the library: the first or last album.
+    pub fn album_step(&self, delta: i32) -> Option<String> {
+        let order = self.lib.albums_in_order();
+        if order.is_empty() {
+            return None;
+        }
+        let playing = self.now.as_ref().and_then(|n| n.album_uri.as_deref()).and_then(|u| self.lib.album_by_uri(u));
+        let at = playing.and_then(|a| order.iter().position(|x| *x == a));
+        let i = match at {
+            Some(i) => (i as i32 + delta).rem_euclid(order.len() as i32) as usize,
+            None if delta < 0 => order.len() - 1,
+            None => 0,
+        };
+        Some(self.lib.albums[order[i]].uri.clone())
+    }
+
+    /// What GO on `item` will most likely play, until Music Assistant says.
+    fn guess_now_playing(&self, item: Item) -> Option<NowPlaying> {
+        let lib = &self.lib;
+        let (track, album) = match item {
+            Item::Track(t) => (Some(t), lib.tracks[t].album),
+            Item::Album(a) => (lib.albums[a].tracks.first().copied(), Some(a)),
+            Item::Artist(a) => {
+                let album = lib.artists[a].albums.first().copied();
+                (album.and_then(|al| lib.albums[al].tracks.first().copied()), album)
+            }
+            _ => return None,
+        };
+        let mut np = NowPlaying { playing: true, ..Default::default() };
+        if let Some(t) = track {
+            np.title = lib.tracks[t].title.clone();
+            np.artist = lib.tracks[t].artist.clone();
+            np.uri = Some(lib.tracks[t].uri.clone());
+            np.cover = lib.tracks[t].cover;
+        }
+        if let Some(a) = album {
+            np.album = lib.albums[a].title.clone();
+            np.album_uri = Some(lib.albums[a].uri.clone());
+            if np.artist.is_empty() {
+                np.artist = lib.albums[a].artist.clone();
+            }
+            if np.cover.slot.is_none() {
+                np.cover = lib.albums[a].cover;
+            }
+        }
+        Some(np)
+    }
+
+    /// ADD TO QUEUE: Music Assistant appends `item`; the queue view shows the library's tracks
+    /// of it until MA reports the real queue.
+    fn enqueue(&mut self, item: Item) -> Vec<Effect> {
+        let Some(uri) = self.uri_of(item).map(str::to_owned) else { return vec![] };
+        let lib = &self.lib;
+        let tracks: Vec<usize> = match item {
+            Item::Track(t) => vec![t],
+            Item::Album(a) => lib.albums[a].tracks.clone(),
+            Item::Artist(a) => lib.artists[a].albums.iter().flat_map(|al| lib.albums[*al].tracks.clone()).collect(),
+            _ => vec![],
+        };
+        let entries: Vec<QueueEntry> = tracks
+            .into_iter()
+            .map(|t| QueueEntry {
+                title: lib.tracks[t].title.clone(),
+                artist: lib.tracks[t].artist.clone(),
+                uri: Some(lib.tracks[t].uri.clone()),
+                cover: lib.tracks[t].cover,
+            })
+            .collect();
+        self.queue.extend(entries);
+        self.refresh_queue();
+        vec![Effect::Enqueue(vec![uri])]
+    }
+
     fn animate(&mut self, now: Time) {
         let dt = self.last_frame.map(|t| now.saturating_sub(t).as_secs_f32()).unwrap_or(1.0).min(0.25);
         self.last_frame = Some(now);
@@ -755,11 +961,22 @@ impl Ui {
         s
     }
 
-    /// The fake library's art for `album`: a generated gradient sleeve, made once.
-    fn album_art(&mut self, album: usize) -> Arc<Image> {
-        let (r, g, b) = self.lib.albums[album].colour;
+    /// A cover as an image: the atlas slot, else a sleeve in the cover's average colour, else
+    /// the stock default cover. Made once and kept.
+    fn art(&mut self, cover: Cover) -> Arc<Image> {
+        if let (Some(slot), Some(src)) = (cover.slot, self.lib.covers.clone()) {
+            if let Some(img) = self.art.get(&ArtKey::Slot(slot)) {
+                return img.clone();
+            }
+            if let Some(img) = src.cover(slot) {
+                self.art.insert(ArtKey::Slot(slot), img.clone());
+                return img;
+            }
+        }
+        let Some(rgb) = cover.rgb else { return self.assets.cover_medium.clone() };
+        let (r, g, b) = ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
         self.art
-            .entry(album)
+            .entry(ArtKey::Rgb(rgb))
             .or_insert_with(|| {
                 let (r, g, b) = (r as f32, g as f32, b as f32);
                 Image::from_fn(256, 256, |x, y| {
@@ -879,10 +1096,69 @@ mod tests {
         ui.input(Input::Pressed(Button::Go), ms(100));
         ui.input(Input::LongPress(Button::Go), ms(900)); // opens on ADD TO QUEUE
         let fx = ui.input(Input::Released(Button::Go), ms(1000));
-        assert!(matches!(fx[..], [Effect::Enqueue(_)]));
+        assert!(matches!(fx[..], [Effect::Enqueue(ref u)] if u.len() == 1));
         ui.input(Input::Pointer(30), ms(1100));
         assert_eq!(ui.zone().name, "QUEUE");
         assert_eq!(ui.level().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn go_on_a_track_in_an_album_plays_the_album_from_it() {
+        let mut ui = ui_at(70); // ALBUMS
+        ui.input(Input::Pressed(Button::Left), ms(1)); // album -> its tracks
+        ui.input(Input::MenuWheel(15), ms(2)); // the second track
+        ui.input(Input::Pressed(Button::Go), ms(3));
+        let fx = ui.input(Input::Released(Button::Go), ms(4));
+        let lib = Library::generate();
+        let album = &lib.albums[lib.albums_in_order()[0]];
+        let track = &lib.tracks[album.tracks[1]];
+        assert_eq!(fx, vec![Effect::Play(PlayRequest { uri: album.uri.clone(), start: Some(track.uri.clone()) })]);
+        // shown at once, before Music Assistant reports it
+        assert_eq!(ui.now_playing().unwrap().title, track.title);
+        assert!(ui.is_playing(Item::Track(album.tracks[1])));
+    }
+
+    #[test]
+    fn a_new_library_keeps_every_list_in_place() {
+        let mut ui = ui_at(76); // ARTISTS
+        ui.input(Input::MenuWheel(45), ms(1));
+        ui.input(Input::Pressed(Button::Left), ms(2)); // artist -> albums
+        let before = ui.current_item().map(|i| ui.uri_of(i).unwrap().to_owned());
+        // the same library with one artist more, sorted first
+        let mut lib = Library::generate();
+        lib.artists.push(library::Artist { name: "0 First".into(), albums: vec![], uri: "x://new".into(), sort: "0".into() });
+        ui.set_library(lib);
+        assert_eq!(ui.stacks[ui.zone_index()].len(), 2, "still drilled into the artist");
+        assert_eq!(ui.current_item().map(|i| ui.uri_of(i).unwrap().to_owned()), before);
+        ui.input(Input::Pressed(Button::Right), ms(3));
+        assert_eq!(ui.level().unwrap().cursor, 4, "the artist moved down one row with it");
+    }
+
+    #[test]
+    fn album_step_follows_the_albums_list() {
+        let mut ui = ui_at(0);
+        let lib = Library::generate();
+        let order = lib.albums_in_order();
+        assert_eq!(ui.album_step(1), Some(lib.albums[order[0]].uri.clone()), "nothing playing: the first");
+        ui.set_now_playing(Some(NowPlaying {
+            album_uri: Some(lib.albums[order[5]].uri.clone()),
+            playing: true,
+            ..Default::default()
+        }));
+        assert_eq!(ui.album_step(1), Some(lib.albums[order[6]].uri.clone()));
+        assert_eq!(ui.album_step(-1), Some(lib.albums[order[4]].uri.clone()));
+        // a report without a cover takes the album's from the library
+        assert_eq!(ui.now_playing().unwrap().cover, lib.albums[order[5]].cover);
+    }
+
+    #[test]
+    fn the_queue_comes_from_music_assistant_and_go_jumps_in_it() {
+        let mut ui = ui_at(30); // QUEUE
+        let e = |t: &str| QueueEntry { title: t.into(), uri: Some(format!("x://{t}")), ..Default::default() };
+        ui.set_queue(vec![e("one"), e("two"), e("three")]);
+        ui.input(Input::MenuWheel(30), ms(1));
+        ui.input(Input::Pressed(Button::Go), ms(2));
+        assert_eq!(ui.input(Input::Released(Button::Go), ms(3)), vec![Effect::PlayQueueIndex(2)]);
     }
 
     #[test]

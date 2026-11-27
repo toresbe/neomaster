@@ -116,11 +116,11 @@ impl Client {
             .map(drop)
     }
 
-    /// Play a container (album, playlist) starting at one of its tracks.
+    /// Replace the queue with a container (album, playlist) and play it from one of its tracks.
     pub async fn play_media_from(&self, queue_id: &str, container_uri: &str, start_item_uri: &str) -> Result<()> {
         self.command_raw(
             "player_queues/play_media",
-            json!({"queue_id": queue_id, "media": [container_uri], "option": QueueOption::Play, "start_item": start_item_uri}),
+            json!({"queue_id": queue_id, "media": [container_uri], "option": QueueOption::Replace, "start_item": start_item_uri}),
         )
         .await
         .map(drop)

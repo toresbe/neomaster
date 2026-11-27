@@ -4,7 +4,8 @@
 //!
 //! Configuration: the settings' `[music_assistant]` (`url`, `player_id`, and the token from
 //! `MA_TOKEN` or `token_file`); `MA_URL` and `NEOMASTER_MA_PLAYER` override them for a run.
-//! Without them N.RADIO tunes and logs but plays nothing.
+//! Without a URL and a token N.RADIO tunes and logs but plays nothing. Without `player_id` it
+//! plays on the built-in player's queue, which the N.MUSIC actor finds ([`crate::music`]).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -58,9 +59,6 @@ impl MaConfig {
         if s.url.trim().is_empty() {
             missing.push("music_assistant.url (MA_URL)");
         }
-        if s.player_id.trim().is_empty() {
-            missing.push("music_assistant.player_id (NEOMASTER_MA_PLAYER)");
-        }
         let token = s.token();
         if token.is_none() {
             missing.push("MA_TOKEN or music_assistant.token_file");
@@ -68,7 +66,8 @@ impl MaConfig {
         if !missing.is_empty() {
             return Err(format!("{} not set", missing.join(", ")));
         }
-        Ok(MaConfig { url: s.url.clone(), token: token.unwrap_or_default(), queue_id: s.player_id.clone() })
+        // empty: the built-in player's queue, from the N.MUSIC actor
+        Ok(MaConfig { url: s.url.clone(), token: token.unwrap_or_default(), queue_id: s.player_id.trim().to_string() })
     }
 }
 
@@ -81,9 +80,10 @@ pub async fn run(
     presets_path: PathBuf,
     mut cmds: mpsc::UnboundedReceiver<RadioCmd>,
     events: mpsc::UnboundedSender<Event>,
+    mut built_in_queue: crate::music::QueueWatch,
 ) {
     let client = ma.as_ref().map(|c| ma_client::Client::connect(ma_client::Config::new(&c.url, &c.token)).0);
-    let queue = ma.map(|c| c.queue_id).unwrap_or_default();
+    let fixed_queue = ma.map(|c| c.queue_id).unwrap_or_default();
     while let Some(first) = cmds.recv().await {
         // Several presses in a row (▲ ▲ ▲): only the newest station is worth starting. Saves
         // are done as they come.
@@ -99,6 +99,7 @@ pub async fn run(
             RadioCmd::Save(_) => {}
             RadioCmd::Stop => {
                 let Some(client) = &client else { continue };
+                let Some(queue) = queue_id(&fixed_queue, &mut built_in_queue).await else { continue };
                 if connected(client).await {
                     if let Err(e) = client.stop(&queue).await {
                         warn!("N.RADIO: stopping the Music Assistant queue: {e}");
@@ -118,6 +119,10 @@ pub async fn run(
                     warn!("N.RADIO: Music Assistant unreachable; preset {} not played", preset.number);
                     continue;
                 }
+                let Some(queue) = queue_id(&fixed_queue, &mut built_in_queue).await else {
+                    warn!("N.RADIO: the BM5's Music Assistant player is not there yet; preset {} not played", preset.number);
+                    continue;
+                };
                 if preset.uri.is_empty() {
                     match radio::ma::resolve(client, &preset.name).await {
                         Ok(r) => {
@@ -140,6 +145,16 @@ pub async fn run(
     }
 }
 
+/// The queue to play on: `music_assistant.player_id` if set, else the built-in player's, which
+/// the N.MUSIC actor finds (waiting a while for it, as for the connection).
+async fn queue_id(fixed: &str, built_in: &mut crate::music::QueueWatch) -> Option<String> {
+    if !fixed.is_empty() {
+        return Some(fixed.to_string());
+    }
+    let q = tokio::time::timeout(CONNECT_WAIT, built_in.wait_for(|q| q.is_some())).await.ok()?.ok()?;
+    q.clone()
+}
+
 async fn connected(client: &ma_client::Client) -> bool {
     tokio::time::timeout(CONNECT_WAIT, client.wait_connected()).await.is_ok()
 }
@@ -154,6 +169,7 @@ fn save(path: &std::path::Path, presets: &radio::Presets) {
 pub fn spawn(
     rt: &tokio::runtime::Runtime,
     music_assistant: &settings::MusicAssistant,
+    built_in_queue: crate::music::QueueWatch,
     events: mpsc::UnboundedSender<Event>,
 ) -> (radio::Tuner, mpsc::UnboundedSender<RadioCmd>) {
     let path = radio::store::default_path();
@@ -167,6 +183,6 @@ pub fn spawn(
         }
     };
     let (tx, rx) = mpsc::unbounded_channel();
-    rt.spawn(run(ma, path, rx, events));
+    rt.spawn(run(ma, path, rx, events, built_in_queue));
     (radio::Tuner::new(presets), tx)
 }

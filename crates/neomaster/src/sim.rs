@@ -98,14 +98,18 @@ pub fn run(
         let _ = input_tx.send(Event::Quit);
     })?;
 
-    let ui = ui::Ui::with_assets(ui::fake::Library::generate(), assets);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+    // N.MUSIC: Music Assistant if configured (the library arrives from the mirror), else a
+    // made-up library
+    let (music, ma_queue) = crate::music::spawn(&rt, true, &startup.settings.music_assistant, event_tx.clone());
+    let lib = if music.is_some() { ui::Library::empty() } else { ui::fake::Library::generate() };
+    let ui = ui::Ui::with_assets(lib, assets);
     crate::debug::server::start(&rt, debug_cfg, event_tx.clone(), crate::debug_hello("sim", role, device))?;
     let aux_out = a_aux::loopback::Loopback::new(crate::settings_rt::loopback_config(&startup.settings.aux));
     info!("Masterlink role {role:?}, {device:?} PC2");
     let pc2 = crate::spawn_pc2(&rt, device, role, event_tx.clone());
     let link = Link::new(link::Config::from_settings(&startup.settings));
-    let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
+    let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, &startup.settings.music_assistant, ma_queue, event_tx.clone());
     let airplay: Box<dyn crate::core::AirPlayOut> =
         match crate::core::start_airplay(event_tx.clone(), &startup.settings.aux.playback) {
             Some(r) => Box::new(r),
@@ -113,6 +117,10 @@ pub fn run(
         };
     let core =
         startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx.clone()).with_radio(tuner, radio_tx);
+    let core = match music {
+        Some(m) => core.with_music(m),
+        None => core,
+    };
     rt.block_on(core.with_airplay(airplay).run(event_rx));
     drop(rt);
     let _ = render_thread.join();
