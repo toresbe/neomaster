@@ -418,6 +418,8 @@ impl Store {
 
     pub fn replace_playlist_tracks(&self, playlist_id: &str, tracks: &[Track]) -> Result<()> {
         self.conn.execute("DELETE FROM playlist_tracks WHERE playlist_id=?1", [playlist_id])?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        self.mark_playlist_fetched(playlist_id, now)?;
         let mut st = self.conn.prepare_cached(
             "INSERT OR REPLACE INTO playlist_tracks (playlist_id, pos, uri, name, subtitle, duration, cover) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
@@ -659,12 +661,16 @@ impl Store {
         Ok(v)
     }
 
+    /// Whether a playlist's contents have been fetched (or tried), even if
+    /// MA returned nothing.
     pub fn has_playlist_tracks(&self, playlist_id: &str) -> Result<bool> {
-        Ok(self
-            .conn
-            .query_row("SELECT 1 FROM playlist_tracks WHERE playlist_id=?1 LIMIT 1", [playlist_id], |_| Ok(()))
-            .optional()?
-            .is_some())
+        Ok(self.meta(&format!("playlist_fetched:{playlist_id}"))?.is_some())
+    }
+
+    /// Record that a playlist was fetched (or failed) at `now`, so a
+    /// resync does not ask MA again until an explicit full sync.
+    pub fn mark_playlist_fetched(&self, playlist_id: &str, now: i64) -> Result<()> {
+        self.set_meta(&format!("playlist_fetched:{playlist_id}"), &now.to_string())
     }
 
     /// Non-dynamic playlists: (item_id, provider of the library item).
