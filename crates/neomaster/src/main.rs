@@ -44,9 +44,67 @@ Debug connection (off by default; see doc/debug-connection.md):
   --debug-record FILE record everything from start-up to a JSON Lines file
                       ($NEOMASTER_DEBUG_RECORD)
 
-  NEOMASTER_STOCK_ASSETS=DIR  with --sim: draw with the BM5's own font and textures, read from
-              DIR (its Windows disk, e.g. /mnt/A); without it the UI draws look-alikes
+Stock look (B&O's font and textures, not shipped with neomaster):
+  neomaster import-stock-assets [FROM [TO]]
+              copy them from the BM5's Windows partition, mounted at FROM (default: found in
+              /proc/mounts), to TO (default: /var/lib/neomaster/stock-assets as root, else
+              ~/.local/share/neomaster/stock-assets), where the UI picks them up
+  NEOMASTER_STOCK_ASSETS=DIR  read them from DIR instead (the Windows disk itself works too);
+              without either the UI draws look-alikes
 ";
+
+/// `neomaster import-stock-assets [FROM [TO]]`: copy B&O's UI files off the Windows partition.
+fn import_stock_assets(args: &[String]) -> ExitCode {
+    if args.len() > 2 || args.iter().any(|a| a.is_empty() || a.starts_with('-')) {
+        eprint!("{USAGE}");
+        return ExitCode::FAILURE;
+    }
+    let from = match args.first() {
+        Some(f) => std::path::PathBuf::from(f),
+        None => match ui::assets::find_windows_disks().as_slice() {
+            [one] => one.clone(),
+            [] => {
+                eprintln!(
+                    "neomaster: no mounted BeoMaster 5 Windows partition found; mount it (read-only is enough, \
+                     e.g. mount -o ro /dev/sda1 /mnt/A) or name it: neomaster import-stock-assets /mnt/A"
+                );
+                return ExitCode::FAILURE;
+            }
+            many => {
+                let list: Vec<String> = many.iter().map(|p| p.display().to_string()).collect();
+                eprintln!("neomaster: several candidates ({}); name one", list.join(", "));
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    let to = args.get(1).map(std::path::PathBuf::from).unwrap_or_else(ui::assets::default_dir);
+    match ui::assets::import(&from, &to) {
+        Ok(files) => {
+            let mut copied = 0;
+            for f in &files {
+                match f {
+                    ui::assets::Imported::Copied(p) => {
+                        copied += 1;
+                        println!("copied  {}", p.display());
+                    }
+                    ui::assets::Imported::Missing(name) => println!("missing {name}"),
+                }
+            }
+            println!("{copied} of {} files from {} in {}", files.len(), from.display(), to.display());
+            if copied == 0 {
+                return ExitCode::FAILURE;
+            }
+            if args.get(1).is_some() && std::env::var_os(ui::assets::STOCK_ASSETS_ENV).is_none() {
+                println!("(not the default folder: set {}={} to use them)", ui::assets::STOCK_ASSETS_ENV, to.display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("neomaster: writing {}: {e}", to.display());
+            ExitCode::FAILURE
+        }
+    }
+}
 
 /// Which PC2 the core talks to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +179,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().is_some_and(|a| a == "debug") {
         return debug::client::main(&args[1..]);
+    }
+    if args.first().is_some_and(|a| a == "import-stock-assets") {
+        return import_stock_assets(&args[1..]);
     }
     debug::logger::TapLogger::init(&mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")));
     let mut debug_cfg = match debug::Config::from_env() {

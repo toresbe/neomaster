@@ -2,10 +2,13 @@
 //!
 //! The stock look comes from a handful of B&O files on the BM5's own Windows disk: BeoFont.ttf,
 //! the arc and glow textures and the default covers. Those are B&O's copyright and are not in
-//! this repository. Point `NEOMASTER_STOCK_ASSETS` at that disk (or at the BeoMaster 5 install
-//! folder, or at a folder holding copies of the files) to use them. Anything missing is drawn
-//! here instead, from measurements of the stock screen, so the UI looks close without them.
+//! this repository. `neomaster import-stock-assets` copies them from the mounted Windows
+//! partition into [`default_dir`], where the UI finds them; `NEOMASTER_STOCK_ASSETS` can point at
+//! another place (that disk, its BeoMaster 5 install folder, or a folder of copies). Anything
+//! missing is drawn here instead, from measurements of the stock screen, so the UI looks close
+//! without them.
 
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,6 +21,81 @@ pub const STOCK_ASSETS_ENV: &str = "NEOMASTER_STOCK_ASSETS";
 const INSTALL: &str = "Program Files/Bang & Olufsen/BeoMaster 5";
 const TEXTURES: &str = "Resources/Texture/A18";
 const DEFAULTS: &str = "Resources/Defaults";
+const FONTS: &str = "WINDOWS/Fonts";
+
+/// The stock files the UI uses: name, and folder relative to the Windows disk's root.
+pub const STOCK_FILES: [(&str, &str); 7] = [
+    ("BeoFont.ttf", FONTS),
+    ("Arc.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Texture/A18"),
+    ("ArcFlare.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Texture/A18"),
+    ("VolumeLightArc.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Texture/A18"),
+    ("LargeCover.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Defaults"),
+    ("MediumCover.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Defaults"),
+    ("SmallCover.png", "Program Files/Bang & Olufsen/BeoMaster 5/Resources/Defaults"),
+];
+
+/// Where [`import`] puts the files and [`Assets::from_env`] looks when the variable is unset:
+/// `/var/lib/neomaster/stock-assets` for root (the BM5), else
+/// `$XDG_DATA_HOME/neomaster/stock-assets` (`~/.local/share/...`).
+pub fn default_dir() -> PathBuf {
+    let root = std::env::var_os("USER").is_some_and(|u| u == "root") || std::env::var_os("HOME").is_some_and(|h| h == "/root");
+    if root {
+        return PathBuf::from("/var/lib/neomaster/stock-assets");
+    }
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .filter(|d| !d.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    data.join("neomaster/stock-assets")
+}
+
+/// Mounted file systems that hold a BeoMaster 5 install (from /proc/mounts), for finding the
+/// Windows partition without being told.
+pub fn find_windows_disks() -> Vec<PathBuf> {
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    let mut out: Vec<PathBuf> = mounts
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        // /proc/mounts escapes spaces and the like as octal
+        .map(|m| PathBuf::from(m.replace("\\040", " ").replace("\\011", "\t").replace("\\134", "\\")))
+        .filter(|m| m.join(INSTALL).is_dir())
+        .collect();
+    out.dedup();
+    out
+}
+
+/// What [`import`] did with each stock file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Imported {
+    Copied(PathBuf),
+    Missing(&'static str),
+}
+
+/// Copy the stock files from `from` (the Windows disk, its BeoMaster 5 folder, or a folder of
+/// copies) into `to`, flat. Files not found are reported, not an error; failing to write is.
+pub fn import(from: &Path, to: &Path) -> io::Result<Vec<Imported>> {
+    let mut out = Vec::new();
+    for (name, sub) in STOCK_FILES {
+        let src = [
+            from.join(sub).join(name),
+            from.join(sub.trim_start_matches(INSTALL).trim_start_matches('/')).join(name),
+            from.join(name),
+        ]
+        .into_iter()
+        .find(|p| p.is_file());
+        match src {
+            Some(src) => {
+                std::fs::create_dir_all(to)?;
+                let dst = to.join(name);
+                std::fs::copy(&src, &dst)?;
+                out.push(Imported::Copied(dst));
+            }
+            None => out.push(Imported::Missing(name)),
+        }
+    }
+    Ok(out)
+}
 
 #[derive(Clone)]
 pub struct Assets {
@@ -77,7 +155,7 @@ impl Assets {
         png("LargeCover.png", DEFAULTS, &mut a.cover_large);
         png("MediumCover.png", DEFAULTS, &mut a.cover_medium);
         png("SmallCover.png", DEFAULTS, &mut a.cover_small);
-        let font = [root.join("WINDOWS/Fonts/BeoFont.ttf"), root.join("BeoFont.ttf")].into_iter().find(|p| p.is_file());
+        let font = [root.join(FONTS).join("BeoFont.ttf"), root.join("BeoFont.ttf")].into_iter().find(|p| p.is_file());
         if let Some(path) = font {
             match std::fs::read(&path) {
                 Ok(bytes) if render::Font::from_bytes(&bytes).is_ok() => {
@@ -92,10 +170,12 @@ impl Assets {
         a
     }
 
-    /// [`Assets::load`] from `$NEOMASTER_STOCK_ASSETS`, or [`Assets::builtin`] if it is unset.
+    /// [`Assets::load`] from `$NEOMASTER_STOCK_ASSETS`, else from [`default_dir`] if
+    /// something was imported there, else [`Assets::builtin`].
     pub fn from_env() -> Assets {
         match std::env::var_os(STOCK_ASSETS_ENV) {
             Some(dir) if !dir.is_empty() => Assets::load(Path::new(&dir)),
+            _ if default_dir().is_dir() => Assets::load(&default_dir()),
             _ => Assets::builtin(),
         }
     }
@@ -206,6 +286,20 @@ mod tests {
         assert_eq!(a.cover_medium.width, 108);
         assert_eq!(a.cover_small.width, 81);
         assert!(a.font().has_glyph('A'));
+    }
+
+    #[test]
+    fn import_copies_what_it_finds_flat() {
+        let base = std::env::temp_dir().join(format!("neomaster-import-test-{}", std::process::id()));
+        let disk = base.join("disk");
+        let tex = disk.join(STOCK_FILES[1].1);
+        std::fs::create_dir_all(&tex).unwrap();
+        std::fs::write(tex.join("Arc.png"), b"x").unwrap();
+        let out = import(&disk, &base.join("out")).unwrap();
+        assert!(out.contains(&Imported::Copied(base.join("out/Arc.png"))));
+        assert!(out.contains(&Imported::Missing("BeoFont.ttf")));
+        assert_eq!(out.len(), STOCK_FILES.len());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
