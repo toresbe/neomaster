@@ -507,7 +507,11 @@ pub mod lock_manager {
 ///   when it is not 00 or ff and the device accepts numbers, +0x46; stored as the source's
 ///   channel/track, SOURCE_STATUS byte 9), and byte 8, how the source was activated: 0c = a timer
 ///   ("SL-ACTIVATION TIMER-PLAY"), anything else "SL-ACTIVATION WE DONT KNOW". The other bytes are
-///   not read; TODO: their meaning.
+///   not read; TODO: their meaning. Observed 2026-11-27 06:59 when a Beosystem 3 wake-up timer
+///   started N.RADIO preset 8: `00 00 08 00 02 02 01 03 0c 00` (channel 8, timer; byte 7 is 03
+///   there and ff in every room-started request), followed by SOURCE_STATUS byte 9 = 08 and
+///   PRI_SYSTEM byte 2 = 08. The audio master copies the channel from the room's LINK_CONNECT,
+///   whose byte 2 is the same number (`02 a1 08 02 01 00 ...`).
 /// - **long** (size >= 11): byte 10 is the SlConnectType. Type 4 is handled: byte 7 is the
 ///   requested screen format (mapped by 0x42342dc into SOURCE_STATUS bytes 13 and 24) and, if the
 ///   payload has 16 bytes, byte 15 selects a format code that goes back in the STATUS. Type 2 is

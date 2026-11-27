@@ -133,3 +133,15 @@ fn source_connect_passes_the_channel_number() {
     assert_eq!(host.channels, vec![(0xa1, 5)]);
     assert_eq!(host.started, vec![0xa1]);
 }
+
+/// The SOURCE_CONNECT a Beosystem 3 wake-up timer caused (live, 2026-11-27 06:59:53): N.RADIO at
+/// preset 8, activated by a timer
+#[test]
+fn source_connect_from_a_wake_up_timer() {
+    use masterlink::protocol::source_connect::{parse_request, Request};
+    let timer = [0x00, 0x00, 0x08, 0x00, 0x02, 0x02, 0x01, 0x03, 0x0c, 0x00];
+    assert_eq!(parse_request(&timer), Request { channel: Some(8), timer_play: true, ..Default::default() });
+    // the same source asked for by room 03 a few seconds later
+    let room = [0x00, 0x00, 0x08, 0x00, 0x02, 0x02, 0x01, 0xff, 0x02, 0x00];
+    assert_eq!(parse_request(&room), Request { channel: Some(8), timer_play: false, ..Default::default() });
+}
