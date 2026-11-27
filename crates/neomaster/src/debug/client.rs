@@ -32,6 +32,7 @@ Driving (refused over TCP unless neomaster runs with --debug-tcp-inject):
                     checksum / EOT; MLGW logs paste as is)
   pc2 HEX..         a raw PC2 message (no USB framing)
   standby | all-standby
+  radio N           play N.RADIO preset N, as if picked on the panel
   mark TEXT..       put a note in the stream and in recordings
   replay FILE [--speed X] [--telegrams]
                     feed a recording's panel reports and IR keys back in, in time
@@ -268,6 +269,10 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "pc2" => Conn::quiet(&target)?.request(json!({ "cmd": "pc2", "hex": args.join(" ") })),
         "standby" => Conn::quiet(&target)?.request(json!({ "cmd": "standby" })),
+        "radio" => {
+            let n: u8 = args.first().and_then(|a| a.parse().ok()).ok_or("")?;
+            Conn::quiet(&target)?.request(json!({ "cmd": "radio", "preset": n }))
+        }
         "all-standby" => Conn::quiet(&target)?.request(json!({ "cmd": "all_standby" })),
         "mark" => Conn::quiet(&target)?.request(json!({ "cmd": "mark", "text": args.join(" ") })),
         "replay" => {

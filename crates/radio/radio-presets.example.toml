@@ -1,0 +1,7 @@
+# N.RADIO presets: copy to /etc/neomaster/radio-presets.toml (or $NEOMASTER_RADIO_PRESETS).
+# number: the channel a Beo4 or a link room asks for (1-99). uri: any Music Assistant URI; leave
+# it out and the name is looked up in MA the first time the preset plays.
+
+[[preset]]
+number = 8
+name = "Deutschlandfunk"   # the stock BM5's preset 8, seen on the link on 27 Nov 2026

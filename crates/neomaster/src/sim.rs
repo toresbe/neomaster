@@ -103,7 +103,8 @@ pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) 
     info!("Masterlink role {role:?}, {device:?} PC2");
     let pc2 = crate::spawn_pc2(&rt, device, role, event_tx.clone());
     let link = Link::new(link::Config::new(role));
-    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).run(event_rx));
+    let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, event_tx.clone());
+    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).with_radio(tuner, radio_tx).run(event_rx));
     drop(rt);
     let _ = render_thread.join();
     Ok(())

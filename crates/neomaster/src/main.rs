@@ -8,6 +8,7 @@ mod core;
 mod debug;
 mod link;
 mod pc2_actor;
+mod radio_actor;
 mod sim;
 mod sim_pc2;
 
@@ -110,10 +111,11 @@ fn headless(role: LinkRole, debug_cfg: &debug::Config) -> Result<(), Box<dyn std
     }
     let ui = ui::Ui::new(ui::fake::Library::generate());
     let link = Link::new(link::Config::new(role));
+    let (tuner, radio_tx) = radio_actor::spawn(&rt, event_tx.clone());
     rt.spawn(core::poll_aux_card(event_tx));
     let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());
     log::info!("Running headless as {role:?}; Ctrl-C to quit");
-    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).run(event_rx));
+    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).with_radio(tuner, radio_tx).run(event_rx));
     Ok(())
 }
 

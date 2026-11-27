@@ -21,6 +21,7 @@ ui = { path = "crates/ui" }
 ma-client = { path = "crates/ma-client" }
 library = { path = "crates/library" }
 a-aux = { path = "crates/a-aux" }
+radio = { path = "crates/radio" }
 log = "0.4"
 
 [profile.release]
