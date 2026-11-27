@@ -23,6 +23,7 @@ library = { path = "crates/library" }
 a-aux = { path = "crates/a-aux" }
 radio = { path = "crates/radio" }
 settings = { path = "crates/settings" }
+airplay = { path = "crates/airplay" }
 log = "0.4"
 
 [profile.release]

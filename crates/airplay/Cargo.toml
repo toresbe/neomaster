@@ -1,0 +1,14 @@
+[package]
+name = "airplay"
+description = "AirPlay for the BeoMaster 5: shairport-sync as a neomaster source, its metadata as track info"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+log.workspace = true
+base64 = "0.22"
+libc = "0.2"
+zune-jpeg = "0.4"
+fast_image_resize = "6"

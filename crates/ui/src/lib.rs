@@ -175,6 +175,25 @@ impl Level {
 /// The long-GO menu: four colour favourites, ADD TO QUEUE (where it opens), then playlists.
 const CONTEXT_ENTRIES: [&str; 10] = ["RED", "GREEN", "YELLOW", "BLUE", "ADD TO  QUEUE", "01", "02", "03", "04", "05"];
 const CONTEXT_DEFAULT: usize = 4;
+
+/// What plays from outside the library (AirPlay): the now-playing view shows this instead of
+/// the library's track while it is set.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct External {
+    /// The source's name, e.g. "AIRPLAY".
+    pub source: String,
+    /// Who is playing, e.g. a phone's name; may be empty.
+    pub from: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// The cover, ideally [`COVER_SIZE`] square (it is scaled to fit).
+    pub cover: Option<Arc<Image>>,
+    pub paused: bool,
+}
+
+/// The now-playing cover's size on screen, in pixels.
+pub const COVER_SIZE: u32 = 512;
 /// The MODE list when no settings say otherwise ([`Ui::set_settings`] relabels it).
 const SOURCES: [&str; 4] = ["N.MUSIC", "N.RADIO", "A.AUX", "SETTINGS"];
 
@@ -211,6 +230,7 @@ pub struct Ui {
     menu_counts: i32,
     queue: Vec<usize>,
     playing: Option<usize>,
+    external: Option<External>,
     volume: u8,
     volume_shown_until: Time,
     /// Long GO: the context menu, open while GO is held.
@@ -253,6 +273,7 @@ impl Ui {
             menu_counts: 0,
             queue: Vec::new(),
             playing: None,
+            external: None,
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
             context: None,
@@ -512,6 +533,32 @@ impl Ui {
         self.idle.set_playing(playing);
     }
 
+    /// Show what an outside source (AirPlay) plays, or `None` to go back to the library's track.
+    pub fn set_external(&mut self, external: Option<External>) {
+        self.external = external;
+    }
+
+    pub fn external(&self) -> Option<&External> {
+        self.external.as_ref()
+    }
+
+    pub fn external_mut(&mut self) -> Option<&mut External> {
+        self.external.as_mut()
+    }
+
+    /// Something started playing by itself (a device began AirPlay streaming): show
+    /// now-playing, waking the panel from blank-screen standby if needed.
+    pub fn show_now_playing(&mut self, now: Time) -> Vec<Effect> {
+        let woke = self.idle.input(now, true);
+        self.context = None;
+        self.idle_now_playing = true;
+        if woke {
+            vec![Effect::Backlight(true)]
+        } else {
+            vec![]
+        }
+    }
+
     /// Our source stopped. As the stock UI does on its source-status event, blank at once unless
     /// something local still listens (`local_listener`, e.g. the audio master's speakers on TV).
     pub fn source_stopped(&mut self, local_listener: bool, now: Time) -> Vec<Effect> {
@@ -743,6 +790,48 @@ mod tests {
 
     fn texts(s: &Scene) -> usize {
         s.items.iter().filter(|p| matches!(p, render::Primitive::Text { .. })).count()
+    }
+
+    #[test]
+    fn external_source_replaces_the_library_track_on_now_playing() {
+        let mut ui = ui_at(5);
+        let cover = Image::new(2, 2, vec![0; 16]);
+        ui.set_external(Some(External {
+            source: "AIRPLAY".into(),
+            from: "Tore's iPhone".into(),
+            title: "All of Me".into(),
+            artist: "Django Reinhardt".into(),
+            album: "Legendary Recordings".into(),
+            cover: Some(cover.clone()),
+            paused: true,
+        }));
+        let scene = ui.scene(ms(10_000));
+        let texts: Vec<&str> = scene
+            .items
+            .iter()
+            .filter_map(|p| match p {
+                render::Primitive::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.contains(&"AIRPLAY · Tore's iPhone · PAUSED"), "{texts:?}");
+        assert!(texts.contains(&"All of Me"), "{texts:?}");
+        assert!(texts.contains(&"Django Reinhardt / Legendary Recordings"), "{texts:?}");
+        let drawn = |s: &Scene| s.items.iter().any(|p| matches!(p, render::Primitive::Image(d) if Arc::ptr_eq(&d.image, &cover)));
+        assert!(drawn(&scene));
+        ui.set_external(None);
+        assert!(!drawn(&ui.scene(ms(20_000))));
+    }
+
+    #[test]
+    fn show_now_playing_wakes_a_blanked_panel() {
+        let mut ui = ui_at(40);
+        assert_eq!(ui.zone().kind, ViewKind::List);
+        assert!(!ui.blank(ms(0)).is_empty());
+        assert_eq!(ui.show_now_playing(ms(100)), vec![Effect::Backlight(true)]);
+        assert!(!ui.blanked());
+        assert_eq!(ui.zone().kind, ViewKind::NowPlaying);
+        assert_eq!(ui.show_now_playing(ms(200)), vec![]);
     }
 
     #[test]

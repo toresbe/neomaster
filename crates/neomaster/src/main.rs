@@ -41,6 +41,10 @@ const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [--config FILE
               /etc/neomaster/settings.toml as root, else ~/.config/neomaster/settings.toml)
   --keys      print the simulator's key bindings
 
+AirPlay (on by default; see doc/airplay.md): neomaster runs shairport-sync and takes the
+source when a device streams to it. NEOMASTER_AIRPLAY=0 turns it off; NEOMASTER_AIRPLAY_NAME,
+_DEVICE (ALSA output), _BACKEND, _PORT, _COMMAND and _DIR configure it.
+
 Debug connection (off by default; see doc/debug-connection.md):
   --debug             serve the debug socket ($NEOMASTER_DEBUG=1); it streams panel reports,
                       Masterlink telegrams, state and timings, and takes injected input
@@ -136,8 +140,12 @@ fn headless(startup: Startup, debug_cfg: &debug::Config) -> Result<(), Box<dyn s
     let (tuner, radio_tx) = radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
     let aux_out = a_aux::loopback::Loopback::new(settings_rt::loopback_config(&startup.settings.aux));
     log::info!("Running headless as {role:?}; Ctrl-C to quit");
+    let airplay: Box<dyn core::AirPlayOut> = match core::start_airplay(event_tx.clone(), &startup.settings.aux.playback) {
+        Some(r) => Box::new(r),
+        None => Box::new(core::NoAirPlay),
+    };
     let core = startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx).with_radio(tuner, radio_tx);
-    rt.block_on(core.run(event_rx));
+    rt.block_on(core.with_airplay(airplay).run(event_rx));
     Ok(())
 }
 

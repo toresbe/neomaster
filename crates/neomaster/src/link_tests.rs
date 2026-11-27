@@ -599,6 +599,75 @@ fn track_info_follows_the_connect_and_track_changes() {
     assert!(h.sim.telegrams().is_empty());
 }
 
+// ---------------------------------------------------------------- AirPlay
+
+#[test]
+fn airplay_as_link_source_rides_on_n_music_and_releases_with_standby() {
+    let mut h = Harness::link_source();
+    h.clear();
+    // a phone starts streaming: the N.MUSIC key to the room's master, play once connected
+    h.act(|l, now| l.select_source(LocalSource::AirPlay, now));
+    assert_eq!(h.sent(true), vec![remote_key(beo4::N_MUSIC)]);
+    assert!(h.app.is_empty());
+    h.incoming(&source_connect(0x7a));
+    assert_eq!(h.app, vec![AppEffect::Play(LocalSource::AirPlay)]);
+    // the room gets the track as our source's name and fields
+    let info: Vec<Bytes> = h.sim.telegrams().into_iter().filter(|t| t[3] == masterlink::protocol::telegram_type::INFO).collect();
+    assert_eq!(&info[0][15..22], b"AIRPLAY");
+    h.clear();
+    let track = TrackInfo { title: "All of Me".into(), artist: "Django Reinhardt".into(), ..TrackInfo::unknown() };
+    h.act(|l, now| l.track_info(track, now));
+    let info = h.sim.telegrams();
+    assert_eq!(info.len(), 7);
+    assert!(info.iter().any(|t| t.windows(9).any(|w| w == b"All of Me")));
+    // the phone stops: the room goes to standby
+    h.clear();
+    h.act(|l, now| l.release_source(LocalSource::AirPlay, now));
+    assert_eq!(h.sent(true), vec![remote_key(beo4::STANDBY)]);
+    assert!(h.app.contains(&AppEffect::Standby));
+}
+
+#[test]
+fn airplay_ending_after_the_room_moved_on_sends_nothing() {
+    let mut h = Harness::link_source();
+    h.act(|l, now| l.select_source(LocalSource::AirPlay, now));
+    // the room's master never connected us (switched to something else)
+    h.clear();
+    h.act(|l, now| l.release_source(LocalSource::AirPlay, now));
+    assert!(h.sent(true).is_empty(), "no STANDBY for a room that listens to something else");
+    // picking N.MUSIC while AirPlay played: ending AirPlay leaves N.MUSIC alone
+    let mut h = Harness::link_source();
+    h.act(|l, now| l.select_source(LocalSource::AirPlay, now));
+    h.incoming(&source_connect(0x7a));
+    h.act(|l, now| l.select_source(LocalSource::NMusic, now));
+    assert_eq!(h.link.playing(), Some(LocalSource::NMusic));
+    h.clear();
+    h.act(|l, now| l.release_source(LocalSource::AirPlay, now));
+    assert!(h.sent(true).is_empty() && h.app.is_empty());
+}
+
+#[test]
+fn airplay_as_audio_master_is_a_aux_on_the_link() {
+    let mut h = Harness::audio_master();
+    h.clear();
+    h.act(|l, now| l.select_source(LocalSource::AirPlay, now));
+    assert!(h.link.mixer().speakers_on);
+    assert_eq!(h.app[0], AppEffect::Play(LocalSource::AirPlay));
+    // a link room asks for A.AUX (0x97): it gets AirPlay, distributed as A.AUX
+    h.at(10.0);
+    h.incoming(&[0xc1, 0x04, 0x01, 0x0b, 0x00, 0x00, 0x00, 0x45, 0x07, 0x01, 0x02, 0x97, 0x00, 0x02, 0x01, 0x00, 0x00]);
+    h.at(12.0);
+    assert_eq!(h.link.snapshot().current_source, masterlink::protocol::source::A_AUX);
+    assert_eq!(h.link.playing(), Some(LocalSource::AirPlay));
+    assert!(!h.app.contains(&AppEffect::Play(LocalSource::AAux)));
+    h.clear();
+    h.act(|l, now| l.release_source(LocalSource::AirPlay, now));
+    assert!(!h.link.mixer().speakers_on);
+    // the room keeps our (now silent) source, as with any standby; the player stops
+    assert_eq!(h.app, vec![AppEffect::Standby, AppEffect::Stop]);
+    assert!(h.link.mixer().distributing_on_ml);
+}
+
 // ---------------------------------------------------------------- PC2 housekeeping
 
 #[test]

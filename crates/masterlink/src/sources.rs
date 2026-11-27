@@ -13,6 +13,10 @@
 //!   link as N.MUSIC. In every other configuration it switches the A.AUX device (0x97) on.
 //!   `TPcMServiceProxy_OnIpcActive` applies the same rule to the music service.
 //!
+//! AirPlay (neomaster's own, not a B&O source) has no link device of its own: it rides on the
+//! slot of [`AIRPLAY_SLOT`], the way BeoSound5.exe let a DLNA push take over A.AUX (its "DMR"
+//! half). A room asking for that slot while AirPlay plays keeps AirPlay.
+//!
 //! The N.MUSIC device's address can be moved by MLConfig.dll (A.MEM 0x79, CD 0x8d; HKCU
 //! `BeoLink PC\<Slot>DefaultAddress`), so the slot address is a field, not a constant.
 
@@ -25,6 +29,23 @@ pub enum LocalSource {
     NRadio,
     /// A.AUX: a USB sound card's line in, played through the BM5 (see the `aux` crate).
     AAux,
+    /// AirPlay: a phone or computer streaming to shairport-sync (see the `airplay` crate). It is
+    /// announced on the link as [`AIRPLAY_SLOT`].
+    AirPlay,
+}
+
+/// The B&O source whose link address and Beo4 key AirPlay borrows. A.AUX, because the stock
+/// BM5 played a pushed network stream (DLNA, its renderer) as A.AUX; see `doc/airplay.md`.
+pub const AIRPLAY_SLOT: LocalSource = LocalSource::AAux;
+
+impl LocalSource {
+    /// The B&O source this one is announced as: itself, or [`AIRPLAY_SLOT`] for AirPlay.
+    pub fn slot(self) -> LocalSource {
+        match self {
+            LocalSource::AirPlay => AIRPLAY_SLOT,
+            s => s,
+        }
+    }
 }
 
 /// How the BM5 sits on the link.
@@ -70,28 +91,41 @@ impl SourceMap {
 
     /// The ML source a local source is announced and distributed as.
     pub fn ml_source(&self, local: LocalSource) -> u8 {
-        match (local, self.role) {
+        match (local.slot(), self.role) {
             (LocalSource::NMusic, _) => self.n_music,
             (LocalSource::NRadio, _) => self.n_radio,
             (LocalSource::AAux, LinkRole::AudioMaster) => ml::A_AUX,
             (LocalSource::AAux, LinkRole::SourceCenter) => self.n_music,
+            (LocalSource::AirPlay, _) => unreachable!("slot() never returns AirPlay"),
         }
     }
 
     /// The Beo4 key that selects a local source, as the BM5 sends it to the room's master in
     /// the source center role (A.AUX rides on N.MUSIC there, so it is the N.MUSIC key).
     pub fn beo4_key(&self, local: LocalSource) -> u8 {
-        match (local, self.role) {
+        match (local.slot(), self.role) {
             (LocalSource::NMusic, _) | (LocalSource::AAux, LinkRole::SourceCenter) => beo4::N_MUSIC,
             (LocalSource::NRadio, _) => beo4::N_RADIO,
             (LocalSource::AAux, LinkRole::AudioMaster) => beo4::A_AUX,
+            (LocalSource::AirPlay, _) => unreachable!("slot() never returns AirPlay"),
         }
     }
 
     /// A link room asked for ML source `src` (`Host::start_source`). Which local source plays?
     /// `active` is what plays locally now: when the N.MUSIC slot carries A.AUX (source center
-    /// role) a request for it keeps A.AUX playing, as BeoIpcML does.
+    /// role) a request for it keeps A.AUX playing, as BeoIpcML does. Likewise a request for
+    /// AirPlay's slot keeps AirPlay playing.
     pub fn local_source(&self, src: u8, active: Option<LocalSource>) -> Option<LocalSource> {
+        let found = self.b_and_o_source(src, active.map(LocalSource::slot))?;
+        match active {
+            Some(LocalSource::AirPlay) if self.ml_source(found) == self.ml_source(LocalSource::AirPlay) => {
+                Some(LocalSource::AirPlay)
+            }
+            _ => Some(found),
+        }
+    }
+
+    fn b_and_o_source(&self, src: u8, active: Option<LocalSource>) -> Option<LocalSource> {
         if src == self.n_music {
             if self.role == LinkRole::SourceCenter && active == Some(LocalSource::AAux) {
                 return Some(LocalSource::AAux);

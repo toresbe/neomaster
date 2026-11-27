@@ -106,9 +106,14 @@ pub fn run(
     let pc2 = crate::spawn_pc2(&rt, device, role, event_tx.clone());
     let link = Link::new(link::Config::from_settings(&startup.settings));
     let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
+    let airplay: Box<dyn crate::core::AirPlayOut> =
+        match crate::core::start_airplay(event_tx.clone(), &startup.settings.aux.playback) {
+            Some(r) => Box::new(r),
+            None => Box::new(crate::core::NoAirPlay),
+        };
     let core =
         startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx.clone()).with_radio(tuner, radio_tx);
-    rt.block_on(core.run(event_rx));
+    rt.block_on(core.with_airplay(airplay).run(event_rx));
     drop(rt);
     let _ = render_thread.join();
     Ok(())

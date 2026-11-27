@@ -531,6 +531,40 @@ impl Link {
         out
     }
 
+    /// A source that started by itself (AirPlay) has ended. If the room still listens to it,
+    /// the room goes to standby as if the user had pressed it (audio master: speakers off;
+    /// link source: STANDBY to the room's master). If the room has moved on, nothing is sent:
+    /// the player only stops if it still plays the source.
+    pub fn release_source(&mut self, local: LocalSource, now: Time) -> Outputs {
+        let mut out = Outputs::default();
+        if self.selected != Some(local) {
+            if self.playing == Some(local) {
+                info!("{} ended; link rooms listening to it hear silence", display_name(local));
+                self.stop_player(&mut out);
+            }
+            return out;
+        }
+        let ours_on_link = match &self.machine {
+            Machine::AudioMaster(_) => true,
+            Machine::SourceCenter(sc) => sc.distributing() && sc.current_source() == self.map.ml_source(local),
+        };
+        if ours_on_link {
+            info!("{} ended: standby", display_name(local));
+            out = self.standby(now);
+            // Link rooms still listening (audio master) keep the source, but it has nothing to play.
+            self.stop_player(&mut out);
+            return out;
+        }
+        // Link source whose room master never connected us, or switched to something else.
+        info!("{} ended; the room's master is on another source, leaving it be", display_name(local));
+        self.selected = None;
+        if let Machine::SourceCenter(sc) = &mut self.machine {
+            sc.set_local_playback(false);
+        }
+        self.stop_player(&mut out);
+        out
+    }
+
     /// Long standby: every node on the link off.
     pub fn all_standby(&mut self, now: Time) -> Outputs {
         let mut out = Outputs::default();
@@ -545,10 +579,9 @@ impl Link {
         out
     }
 
-    /// The playing track changed (from Music Assistant). In the source center role it goes to
-    /// the link rooms as DISPLAY_DATA and METADATA while we distribute.
-    // Music Assistant's now-playing feeds this once the player is wired in.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The playing track changed (from AirPlay; Music Assistant once its player is wired in).
+    /// In the source center role it goes to the link rooms as DISPLAY_DATA and METADATA while
+    /// we distribute.
     pub fn track_info(&mut self, info: TrackInfo, now: Time) -> Outputs {
         let mut out = Outputs::default();
         self.track = info;
@@ -653,6 +686,7 @@ pub fn display_name(local: LocalSource) -> &'static str {
         LocalSource::NMusic => "N.MUSIC",
         LocalSource::NRadio => "N.RADIO",
         LocalSource::AAux => "A.AUX",
+        LocalSource::AirPlay => "AIRPLAY",
     }
 }
 
