@@ -1,0 +1,9 @@
+[package]
+name = "ma-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+[dependencies]

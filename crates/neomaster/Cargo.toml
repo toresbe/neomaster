@@ -1,0 +1,4 @@
+[package]
+name = "neomaster"
+version.workspace = true
+edition.workspace = true

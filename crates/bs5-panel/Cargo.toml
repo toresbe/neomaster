@@ -1,0 +1,4 @@
+[package]
+name = "bs5-panel"
+version.workspace = true
+edition.workspace = true

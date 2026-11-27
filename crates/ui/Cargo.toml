@@ -1,0 +1,4 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true

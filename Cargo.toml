@@ -1,0 +1,24 @@
+# neomaster 2: the Rust rewrite. See doc/rust-workspace.md for the layout.
+# The C++ neomaster (CMakeLists.txt, *.cpp) stays alongside until the Rust one replaces it.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license-file = "LICENSE"
+repository = "https://github.com/toresbe/neomaster"
+
+[workspace.dependencies]
+masterlink = { path = "crates/masterlink" }
+pc2 = { path = "crates/pc2" }
+bs5-panel = { path = "crates/bs5-panel" }
+render = { path = "crates/render" }
+ui = { path = "crates/ui" }
+log = "0.4"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
