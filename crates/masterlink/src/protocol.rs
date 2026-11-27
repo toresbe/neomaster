@@ -302,8 +302,10 @@ pub mod link_connect {
         pub const VIDEO: u8 = 0x01;
         pub const AUDIO: u8 = 0x02;
     }
-    /// TODO: constant in every builder
+    /// Byte 2: the channel or track number asked for (see [`requested_channel`]); 00 = none. Our
+    /// builders always send 00. Observed as 08 for N.RADIO preset 8 (wake-up timer, 2026-11-27).
     pub const BYTE2: u8 = 0x00;
+    pub const NO_CHANNEL: u8 = BYTE2;
     /// TODO: constant in every builder
     pub const BYTE3: u8 = 0x02;
 
