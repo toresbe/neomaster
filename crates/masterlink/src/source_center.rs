@@ -85,7 +85,11 @@ impl SourceCenter {
     }
 
     fn send_status_idle(host: &mut dyn Host) {
-        Self::send_source_status(host, ml::source::PC, ml::source_status::system_status(ml::source::PC, ml::source_status::State::Idle));
+        Self::send_source_status(
+            host,
+            ml::source::PC,
+            ml::source_status::system_status(ml::source::PC, ml::source_status::State::Idle),
+        );
     }
 
     /// Press a Beo4 key on another node, as the BM5 panel does towards the room's master (e.g.
@@ -94,7 +98,16 @@ impl SourceCenter {
     /// audio master's address C1 (as captured; see report §7). Pass `node::AUDIO_MASTER` as
     /// `from` to match.
     pub fn send_remote_key(&self, host: &mut dyn Host, dest: u8, key: u8, from: u8) {
-        host.send_telegram(Self::make(dest, tt::COMMAND, pt::IR_SIMUL_LOW, ml::ir_simul::SUBTYPE, ml::ir_simul::key(key), ml::source::PC, 0, from));
+        host.send_telegram(Self::make(
+            dest,
+            tt::COMMAND,
+            pt::IR_SIMUL_LOW,
+            ml::ir_simul::SUBTYPE,
+            ml::ir_simul::key(key),
+            ml::source::PC,
+            0,
+            from,
+        ));
     }
 
     /// Startup: broadcast our idle SOURCE_STATUS.

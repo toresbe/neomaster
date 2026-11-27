@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  push:
+    paths: ["Cargo.*", "crates/**", ".cargo/**", "fonts/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["Cargo.*", "crates/**", ".cargo/**", "fonts/**", ".github/workflows/rust.yml"]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup target add i686-unknown-linux-gnu
+          sudo apt-get update
+          sudo apt-get install -y gcc-i686-linux-gnu libc6-dev-i386-cross
+      - name: Test (host)
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test (i686)
+        env:
+          CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_RUNNER: /usr/i686-linux-gnu/lib/ld-linux.so.2 --library-path /usr/i686-linux-gnu/lib
+        run: cargo test --workspace --target i686-unknown-linux-gnu
+      - name: Build for the BeoMaster 5 (i686)
+        run: cargo build --release --target i686-unknown-linux-gnu -p neomaster
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neomaster-i686
+          path: target/i686-unknown-linux-gnu/release/neomaster

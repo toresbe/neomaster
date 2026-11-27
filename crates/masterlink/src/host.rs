@@ -41,7 +41,10 @@ pub enum Effect {
     /// A link room asked for this source and [`Effects::accept_source`] accepted it: start it.
     StartSource(u8),
     StopSource,
-    SourceKey { src: u8, key: u8 },
+    SourceKey {
+        src: u8,
+        key: u8,
+    },
     LinkStandby,
     RequestBusLock,
     ReleaseBusLock,

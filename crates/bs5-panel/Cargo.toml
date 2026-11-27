@@ -1,4 +1,9 @@
 [package]
 name = "bs5-panel"
+description = "Sans-IO driver for the BeoSound 5 panel (USB HID 0cd4:1112): wheels, pointer arc, buttons, click, backlight"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]

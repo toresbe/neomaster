@@ -1,4 +1,16 @@
 [package]
 name = "render"
+description = "Scene types, glyph atlas and render backends (XRender via x11rb first) for neomaster"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[features]
+default = ["xrender"]
+xrender = ["dep:x11rb"]
+
+[dependencies]
+fontdue = "0.9"
+log.workspace = true
+x11rb = { version = "0.13", default-features = false, features = ["render", "xkb"], optional = true }

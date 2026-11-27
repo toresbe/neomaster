@@ -294,15 +294,7 @@ pub mod link_connect {
     /// The 13-byte form: head, <mode>, then 01 00 00 00 / 00 00 00 00, <byte 11>, <second source>.
     pub fn with_second_source(src: u8, mode: Mode, wanted_form: bool, byte11: u8, second: u8) -> Vec<u8> {
         let mut p = head(src);
-        p.extend_from_slice(&[
-            mode as u8,
-            if wanted_form { WANTED_FORM_BYTE7 } else { 0x00 },
-            0x00,
-            0x00,
-            0x00,
-            byte11,
-            second,
-        ]);
+        p.extend_from_slice(&[mode as u8, if wanted_form { WANTED_FORM_BYTE7 } else { 0x00 }, 0x00, 0x00, 0x00, byte11, second]);
         p
     }
     /// LINK_CONNECT_STATUS (subtype disconnected) to a listener: "<old> is gone, now <new>".

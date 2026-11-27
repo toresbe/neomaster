@@ -156,7 +156,13 @@ impl AudioMaster {
     /// STATUS AUDIO_BUS: free (empty) or busy with our source
     fn send_audio_bus_status(&self, host: &mut dyn Host, to: u8) {
         if self.bus_state == BusState::Distributing {
-            host.send_telegram(Self::make(to, tt::STATUS, pt::AUDIO_BUS, ml::audio_bus::SUBTYPE_BUSY, ml::audio_bus::busy(self.source)));
+            host.send_telegram(Self::make(
+                to,
+                tt::STATUS,
+                pt::AUDIO_BUS,
+                ml::audio_bus::SUBTYPE_BUSY,
+                ml::audio_bus::busy(self.source),
+            ));
         } else {
             host.send_telegram(Self::make(to, tt::STATUS, pt::AUDIO_BUS, ml::audio_bus::SUBTYPE_FREE, vec![]));
         }
@@ -211,7 +217,13 @@ impl AudioMaster {
             ml::link_connect::signal::CONNECTED,
             ml::link_connect::connected(src),
         ));
-        host.send_telegram(Self::make(to, tt::STATUS, pt::PRI_SYSTEM_STATUS, ml::pri_system::SUBTYPE_AUDIO, ml::pri_system::playing(src)));
+        host.send_telegram(Self::make(
+            to,
+            tt::STATUS,
+            pt::PRI_SYSTEM_STATUS,
+            ml::pri_system::SUBTYPE_AUDIO,
+            ml::pri_system::playing(src),
+        ));
     }
 
     /// STATUS PROGRAMMING_STATUS (clock) to ALL: 0a 00 03 hh mm ss 00 DD MM YY <priority> (BCD)
@@ -233,7 +245,13 @@ impl AudioMaster {
 
     /// COMMAND STANDBY_0 on the audio link: take the audio bus from the video master
     fn send_take_bus_from_vm(host: &mut dyn Host) {
-        host.send_telegram(Self::make(node::VIDEO_MASTER, tt::COMMAND, pt::STANDBY_0, ml::standby::SUBTYPE_0, ml::standby::take_audio_bus()));
+        host.send_telegram(Self::make(
+            node::VIDEO_MASTER,
+            tt::COMMAND,
+            pt::STANDBY_0,
+            ml::standby::SUBTYPE_0,
+            ml::standby::take_audio_bus(),
+        ));
     }
 
     // ------------------------------------------------------------ public API
@@ -598,7 +616,13 @@ impl AudioMaster {
                             ml::local_source::playing(self.local_source),
                         ));
                     } else {
-                        host.send_telegram(Self::make(from, tt::STATUS, pt::LOCAL_SOURCE, ml::local_source::SUBTYPE_NONE, vec![]));
+                        host.send_telegram(Self::make(
+                            from,
+                            tt::STATUS,
+                            pt::LOCAL_SOURCE,
+                            ml::local_source::SUBTYPE_NONE,
+                            vec![],
+                        ));
                     }
                 }
                 pt::LINK_CONNECT_1 => {
@@ -615,7 +639,13 @@ impl AudioMaster {
                         let cur = if self.bus_state == BusState::Distributing { self.source } else { t.payload[1] };
                         let wanted = t.payload[12];
                         for &room in &self.listener_nodes {
-                            host.send_telegram(Self::make(room, tt::STATUS, pt::LINK_CONNECT_0, lc::signal::DISCONNECTED, lc::changed(cur, wanted)));
+                            host.send_telegram(Self::make(
+                                room,
+                                tt::STATUS,
+                                pt::LINK_CONNECT_0,
+                                lc::signal::DISCONNECTED,
+                                lc::changed(cur, wanted),
+                            ));
                         }
                         host.send_telegram(Self::make(
                             from,
@@ -633,7 +663,10 @@ impl AudioMaster {
 
         if t.telegram_type == tt::STATUS && from_vm && to_us {
             // STATUS from the video master
-            if t.payload_type == pt::LINK_INFO && self.bus_state == BusState::Arbitrating && self.arbitration == Arbitration::LinkInfo {
+            if t.payload_type == pt::LINK_INFO
+                && self.bus_state == BusState::Arbitrating
+                && self.arbitration == Arbitration::LinkInfo
+            {
                 self.arbitration_step_link_info_ok(host, now);
             } else if t.payload_type == pt::AUDIO_BUS
                 && self.bus_state == BusState::Arbitrating
@@ -651,7 +684,13 @@ impl AudioMaster {
                         tt::REQUEST,
                         pt::LINK_CONNECT_0,
                         lc::signal::DISCONNECT,
-                        lc::with_second_source(self.vm_busy_source, lc::Mode::WithWantedSource, true, lc::WANTED_BYTE11_AUDIO_MASTER, self.source),
+                        lc::with_second_source(
+                            self.vm_busy_source,
+                            lc::Mode::WithWantedSource,
+                            true,
+                            lc::WANTED_BYTE11_AUDIO_MASTER,
+                            self.source,
+                        ),
                     ));
                     self.arbitration = Arbitration::ChangeRequest;
                     self.arbitration_deadline = now + Self::VM_REPLY_TIMEOUT;

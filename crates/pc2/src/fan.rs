@@ -30,7 +30,17 @@ pub struct FanControl {
 
 impl Default for FanControl {
     fn default() -> Self {
-        FanControl { ideal: 37, hysteresis: 5, maximum: 47, step_hot: 0x19, step_change: 0x0c, step_decay: 5, fan: -1, previous: 0, skip: true }
+        FanControl {
+            ideal: 37,
+            hysteresis: 5,
+            maximum: 47,
+            step_hot: 0x19,
+            step_change: 0x0c,
+            step_decay: 5,
+            fan: -1,
+            previous: 0,
+            skip: true,
+        }
     }
 }
 

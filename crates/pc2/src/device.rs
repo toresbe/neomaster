@@ -62,9 +62,18 @@ pub enum Event {
     /// `masterlink::Telegram::decode`.
     Masterlink(Vec<u8>),
     /// A Beo4 key from the PC2's IR eye. `kind` 0x0f means held.
-    Beo4Key { kind: u8, code: u8 },
+    Beo4Key {
+        kind: u8,
+        code: u8,
+    },
     /// The PC2 reported its tone settings (IN 03 / IN 1d).
-    MixerState { volume: u8, loudness: bool, bass: i8, treble: i8, balance: i8 },
+    MixerState {
+        volume: u8,
+        loudness: bool,
+        bass: i8,
+        treble: i8,
+        balance: i8,
+    },
     /// IN 06 (dead in firmware V0236).
     Headphones(bool),
     /// IN 44 01: the firmware's lock manager holds the Masterlink bus lock for us.
@@ -286,4 +295,3 @@ impl Pc2 {
         events
     }
 }
-

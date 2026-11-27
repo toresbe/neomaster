@@ -15,7 +15,7 @@ repository = "https://github.com/toresbe/neomaster"
 masterlink = { path = "crates/masterlink" }
 pc2 = { path = "crates/pc2" }
 bs5-panel = { path = "crates/bs5-panel" }
-render = { path = "crates/render" }
+render = { path = "crates/render", default-features = false }
 ui = { path = "crates/ui" }
 log = "0.4"
 

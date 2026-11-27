@@ -1,6 +1,12 @@
 # neomaster
 Alternate software for the BeoMaster 5
 
+**neomaster 2 (Rust)** is being written alongside the C++ code: a Cargo workspace in `crates/`
+with libpc2's Masterlink and PC2 layers ported (their capture replays pass byte for byte), a panel
+driver, an XRender UI, and `neomaster --sim`, which runs the panel UI in a desktop window. See
+[doc/rust-workspace.md](doc/rust-workspace.md) for the layout, how to cross-build for the BM5
+(i686) and what is ported.
+
 This project serves two functions:
 
 1. Improve my C++ (so, please don't judge the current code quality. Constructive criticism very welcome.)
