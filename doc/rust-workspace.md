@@ -241,7 +241,9 @@ permutation. The MODE list follows the names (for example A.MEM instead of N.MUS
 **The menu.** GO on SETTINGS in the MODE list opens 7 sections; RIGHT LEFT RIGHT LEFT, then GO on
 SETTINGS, opens the hidden menu with 9 (as on the stock BM5). `settings::menu` builds the
 sections from the settings and the machine facts (uptime, storage, addresses, versions, CD drive);
-`ui::settings_menu` draws them in the stock layout and handles the grammar: the pointer picks a
+`ui::settings_zones` puts them on the arc (the hidden menu's zone boundaries fitted to the
+captured pointer positions) and `ui::settings_menu` draws each section on the list curve and
+handles the grammar: the pointer picks a
 section, the wheel moves, LEFT opens a choice's picker or a submenu, GO (or LEFT) keeps a choice,
 RIGHT leaves a picker or submenu. Conditional items follow the rules: PLAY TIMER or DELAY by AM
 option, the naming items only as audio master, CD naming only with the B&O CD drive. Stock items
@@ -249,6 +251,5 @@ neomaster does not do (software update, recovery, Spotify accounts, client passw
 and show NOT AVAILABLE.
 
 Open points: the stock commit gesture in a picker was not captured (GO keeps, RIGHT cancels here);
-DELAY's unit and range are not decoded, so it is shown but not offered; the stock boundary
-between SERVICE SETTINGS and PRODUCT INFO on the pointer arc is not the nearest label (p 56 showed
-PRODUCT INFO); no speaker-type item exists in the 7.04 software's menus.
+DELAY's unit and range are not decoded, so it is shown but not offered; no speaker-type item
+exists in the 7.04 software's menus.
