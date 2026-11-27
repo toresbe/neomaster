@@ -12,6 +12,8 @@
 //!   number.
 //! - [`ma`] (feature `ma`) resolves a preset that has only a name to an MA station and plays a
 //!   preset on a queue.
+//! - [`stock`] (feature `stock`) reads the stock BM5's N.RADIO database, so its presets carry
+//!   over with the same numbers.
 
 pub mod presets;
 pub mod store;
@@ -19,6 +21,8 @@ mod tuner;
 
 #[cfg(feature = "ma")]
 pub mod ma;
+#[cfg(feature = "stock")]
+pub mod stock;
 
 pub use presets::{Preset, Presets, MAX_NUMBER};
 pub use tuner::{Tune, Tuner, DIGIT_TIMEOUT};

@@ -61,33 +61,41 @@ Tested on 27 Nov 2026 against MA 2.10.13 with a silent Sendspin player (`bm5_pla
 found and played Deutschlandfunk (Radio Browser), a link room's digit 1 switched to preset 1, and
 RELEASE stopped the queue.
 
-## How the stock BM5 numbered its stations
+## Importing the stock presets
 
-From `BeoNetRadio.exe` (Ghidra project `work/ghidra-radio`, annotations
-`work/ghidra-annotations/beonetradio_presets.tsv`) and the C: image's registry:
+The stock BeoSound 5 software keeps N.RADIO in SQLite, `E:\Cache\Data\nradio.db` on the BM5's
+data partition (`/dev/sda3`, label "Data"). Copied from Tore's BM5 on 28 Nov 2026 (read-only
+mount) and read:
 
-Observed:
-- N.RADIO keeps its favourites in four colour lists, CP_RED, CP_GREEN, CP_YELLOW and CP_BLUE
-  (colour 1-4), each capped by `HKCU\Software\Bang & Olufsen\BeoPlayer\N.Radio\MaxItemsInColorPlaylist`
-  (99 on this BM5). The last item played in each colour is kept in
-  `<N.RADIO data dir>\LastPlayedColoredFavItem.beo` as `CP_<colour>=<item>`.
-- Stations and favourites live in a DBISAM database: tables `RadioFiles` (with `ColorFavCode`,
-  `ColorFavDependency`), `RadioFavoriteMaster`, `RadioFavoriteDetails` (`Sequence`, `ItemType`).
-- BeoNetRadio takes Beo4 input as BeoIpc source commands: `Digit`, `ShiftDigit`, `StepUp`,
-  `StepDown`, `ControlRed/Green/Yellow/Blue`, `Track` (dispatch at 0x0422cd18).
-- On the link, the stock BM5 answered "N.RADIO 8" with Deutschlandfunk and sent its name, genre
-  ("News") and country ("Germany") in EXTENDED_SOURCE_INFORMATION.
+- `favorite_list` rows 1-4 are the colour lists RED, GREEN, YELLOW and BLUE (99 items each, all
+  empty here). Rows 5-103 are lists named `01` to `99` with room for one item each: **these are the
+  numbered presets**, the numbers Beo4 digits and link channels select.
+- `favorite_list_item` holds the stations (`entity_type` 12): name, stream URL, country, and the
+  `station.id` in the 66,000-station directory B&O's service filled in.
+- Tore's presets: 1 BBC World Service, 2 KUOW FM, 3 NRK Nyheter, 5 NRK Jazz, 6 WFMU, 7 Radio Nova,
+  8 Deutschlandfunk. Preset 8 matches the wake-up timer's channel 8 on the link.
 
-Inferred:
-- A channel number is a position in a colour list (which list the link's numbers use is not
-  decoded), so numbers run 1-99. neomaster's flat 1-99 list keeps the numbers rooms and timers
-  already use.
+`radio::stock` (feature `stock`) reads this, and the example writes the preset file:
 
-Unknown:
-- Which colour list (or the whole favourites list) Beo4 digits and SOURCE_CONNECT channels index;
-  the event handlers are assigned in code, not in the form resources, and were not traced.
-- BeoNetRadio's digit timeout.
-- The database itself: `BeoLinkMedia\AbsoluteSharePath` is `E:\BM-SHARE` (system files under
-  `\System`), on the BM5's data partition, which is not in the C: image. Reading it (DBISAM
-  `.dat` / `.idx` / `.blb`) would give the real list to migrate. Until then, presets are entered
-  by hand; preset 8 = Deutschlandfunk is confirmed from the link.
+```sh
+sudo mount -t ntfs-3g -o ro /dev/sda3 /mnt/e     # on the BM5; never read-write, Windows must boot
+cp /mnt/e/Cache/Data/nradio.db /tmp/ && sudo umount /mnt/e
+cargo run -p radio --features stock --example import_stock -- /tmp/nradio.db /etc/neomaster/radio-presets.toml
+```
+
+The stock stream URL becomes the preset's URI; Music Assistant plays a plain http(s) URL as a
+radio station (`builtin://radio/<url>`), so no name matching is involved. All seven of Tore's
+URLs resolved in MA 2.10.13. `crates/radio/radio-presets.example.toml` is that import.
+
+## What BeoNetRadio.exe showed (older N.RADIO)
+
+Before the SQLite database turned up, `BeoNetRadio.exe` (the older Delphi N.RADIO, Ghidra project
+`work/ghidra-radio`, annotations `work/ghidra-annotations/beonetradio_presets.tsv`) was read:
+the same four colour lists capped by `MaxItemsInColorPlaylist` = 99, the last item per colour in
+`LastPlayedColoredFavItem.beo`, a DBISAM database (`RadioFiles`, `RadioFavoriteMaster`,
+`RadioFavoriteDetails`), and Beo4 input as BeoIpc `Digit`, `ShiftDigit`, `StepUp`, `StepDown`
+commands. BeoSound5.exe's database labels are annotated in `work/ghidra-bs5exe`
+(`work/ghidra-annotations/bs5exe_nradio_presets.tsv`).
+
+Still unknown: the stock digit timeout, and whether the stock software lets a channel number
+reach into the colour lists.

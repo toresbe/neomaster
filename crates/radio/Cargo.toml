@@ -12,6 +12,8 @@ publish = false
 default = ["ma"]
 # Resolve and play presets through Music Assistant (the async half).
 ma = ["dep:ma-client", "dep:serde_json"]
+# Read the stock BeoSound 5 N.RADIO database (E:\Cache\Data\nradio.db) to import its presets.
+stock = ["dep:rusqlite"]
 
 [dependencies]
 log.workspace = true
@@ -19,6 +21,11 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 ma-client = { workspace = true, optional = true }
 serde_json = { version = "1", optional = true }
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+
+[[example]]
+name = "import_stock"
+required-features = ["stock"]
 
 [dev-dependencies]
 tempfile = "3"

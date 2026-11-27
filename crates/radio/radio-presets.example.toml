@@ -1,7 +1,41 @@
 # N.RADIO presets: copy to /etc/neomaster/radio-presets.toml (or $NEOMASTER_RADIO_PRESETS).
-# number: the channel a Beo4 or a link room asks for (1-99). uri: any Music Assistant URI; leave
-# it out and the name is looked up in MA the first time the preset plays.
+# number: the channel a Beo4 or a link room asks for (1-99). uri: any Music Assistant URI, or a
+# plain stream URL; leave it out and the name is looked up in MA the first time the preset plays.
+#
+# These are the stock BM5's presets as imported from its nradio.db (28 Nov 2026) with
+# `cargo run -p radio --features stock --example import_stock`.
+
+[[preset]]
+number = 1
+name = "BBC World Service"
+uri = "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
+
+[[preset]]
+number = 2
+name = "KUOW FM"
+uri = "http://playerservices.streamtheworld.com/api/livestream-redirect/KUOWFM_HIGH_MP3.mp3"
+
+[[preset]]
+number = 3
+name = "NRK Nyheter"
+uri = "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/nyheter_mp3_h"
+
+[[preset]]
+number = 5
+name = "NRK Jazz"
+uri = "http://cdn0-47115-liveicecast0.dna.contentdelivery.net/jazz_mp3_h"
+
+[[preset]]
+number = 6
+name = "WFMU"
+uri = "http://stream0.wfmu.org/freeform-128k.mp3"
+
+[[preset]]
+number = 7
+name = "Radio Nova"
+uri = "http://stream.radionova.no/mp3"
 
 [[preset]]
 number = 8
-name = "Deutschlandfunk"   # the stock BM5's preset 8, seen on the link on 27 Nov 2026
+name = "Deutschlandfunk"
+uri = "http://st01.sslstream.dlf.de/dlf/01/128/mp3/stream.mp3?aggregator=airable"
