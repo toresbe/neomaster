@@ -12,5 +12,6 @@ xrender = ["dep:x11rb"]
 
 [dependencies]
 fontdue = "0.9"
+png = "0.18"
 log.workspace = true
 x11rb = { version = "0.13", default-features = false, features = ["render", "xkb"], optional = true }

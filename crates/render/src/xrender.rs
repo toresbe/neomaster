@@ -2,23 +2,26 @@
 //!
 //! Glyphs live in a server-side glyph set (A8), uploaded the first time each (character, size)
 //! is drawn. A frame is a sequence of FillRectangles and CompositeGlyphs calls into a back-buffer
-//! pixmap, then one Composite to the window. Covers (pre-baked pixmaps composited OVER) come with
-//! milestone M2.
+//! pixmap, then one Composite to the window. Images are uploaded once into ARGB32 pictures and
+//! composited with a transform (scale, and rotation for the pointer beam) and bilinear filtering;
+//! opacity is a solid alpha mask and a tint is a solid source through the image as mask.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
-use x11rb::connection::Connection;
-use x11rb::protocol::render::{self, ConnectionExt as _, CreatePictureAux, Glyphinfo, PictOp, PictType, Pictformat, Picture};
+use x11rb::connection::{Connection, RequestConnection as _};
+use x11rb::protocol::render::{
+    self, ConnectionExt as _, CreatePictureAux, Fixed, Glyphinfo, PictOp, PictType, Pictformat, Picture, Transform,
+};
 use x11rb::protocol::xproto::{
-    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, PropMode, Rectangle, Window, WindowClass,
+    AtomEnum, ConnectionExt as _, CreateWindowAux, EventMask, ImageFormat, PropMode, Rectangle, Window, WindowClass,
 };
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::glyphs::{Font, GlyphKey};
-use crate::{Align, Color, Primitive, Renderer, Scene};
+use crate::{Align, Blend, Color, ImageDraw, Primitive, Renderer, Scene};
 
 #[derive(Debug)]
 pub struct Error(Box<dyn std::error::Error + Send + Sync>);
@@ -50,7 +53,9 @@ pub struct XRenderer {
     back_pict: Picture,
     win_pict: Picture,
     a8: Pictformat,
+    argb32: Pictformat,
     glyphset: render::Glyphset,
+    images: HashMap<u64, Picture>,
     font: Font,
     glyph_ids: HashMap<GlyphKey, u32>,
     next_glyph: u32,
@@ -110,6 +115,19 @@ impl XRenderer {
             .find(|f| f.type_ == PictType::DIRECT && f.depth == 8 && f.direct.alpha_mask == 0xff)
             .ok_or("no A8 picture format")?
             .id;
+        let argb32 = formats
+            .formats
+            .iter()
+            .find(|f| {
+                f.type_ == PictType::DIRECT
+                    && f.depth == 32
+                    && f.direct.alpha_shift == 24
+                    && f.direct.red_shift == 16
+                    && f.direct.green_shift == 8
+                    && f.direct.blue_shift == 0
+            })
+            .ok_or("no ARGB32 picture format")?
+            .id;
         let win_format = formats
             .screens
             .iter()
@@ -137,7 +155,9 @@ impl XRenderer {
             back_pict,
             win_pict,
             a8,
+            argb32,
             glyphset,
+            images: HashMap::new(),
             font: Font::default_font(),
             glyph_ids: HashMap::new(),
             next_glyph: 1,
@@ -153,6 +173,18 @@ impl XRenderer {
 
     pub fn window(&self) -> Window {
         self.window
+    }
+
+    /// Replace the face text is drawn in (glyphs already uploaded are dropped).
+    pub fn set_font(&mut self, font: Font) -> Result<(), Error> {
+        self.conn.render_free_glyph_set(self.glyphset)?;
+        let glyphset = self.conn.generate_id()?;
+        self.conn.render_create_glyph_set(glyphset, self.a8)?;
+        self.glyphset = glyphset;
+        self.glyph_ids.clear();
+        self.next_glyph = 1;
+        self.font = font;
+        Ok(())
     }
 
     fn solid(&mut self, c: Color) -> Result<Picture, Error> {
@@ -189,6 +221,89 @@ impl XRenderer {
         self.conn.render_add_glyphs(self.glyphset, &[id], &[info], &data)?;
         self.glyph_ids.insert(key, id);
         Ok(id)
+    }
+
+    /// The picture holding `image`, uploading it the first time.
+    fn image_picture(&mut self, image: &crate::Image) -> Result<Picture, Error> {
+        if let Some(p) = self.images.get(&image.id()) {
+            return Ok(*p);
+        }
+        let (w, h) = (image.width as u16, image.height as u16);
+        let pixmap = self.conn.generate_id()?;
+        self.conn.create_pixmap(32, pixmap, self.window, w, h)?;
+        let gc = self.conn.generate_id()?;
+        self.conn.create_gc(gc, pixmap, &Default::default())?;
+        let data = image.premultiplied_bgra();
+        let stride = image.width as usize * 4;
+        // stay well inside the maximum request length
+        let rows_per = ((self.conn.maximum_request_bytes().saturating_sub(64)) / stride.max(1)).clamp(1, 4096);
+        for (i, chunk) in data.chunks(stride * rows_per).enumerate() {
+            let rows = (chunk.len() / stride) as u16;
+            let y = (i * rows_per) as i16;
+            self.conn.put_image(ImageFormat::Z_PIXMAP, pixmap, gc, w, rows, 0, y, 0, 32, chunk)?;
+        }
+        self.conn.free_gc(gc)?;
+        let pict = self.conn.generate_id()?;
+        self.conn.render_create_picture(pict, pixmap, self.argb32, &CreatePictureAux::new())?;
+        self.conn.render_set_picture_filter(pict, b"bilinear", &[])?;
+        self.conn.free_pixmap(pixmap)?;
+        self.images.insert(image.id(), pict);
+        Ok(pict)
+    }
+
+    fn draw_image(&mut self, d: &ImageDraw) -> Result<(), Error> {
+        let pict = self.image_picture(&d.image)?;
+        let op = match d.blend {
+            Blend::Over => PictOp::OVER,
+            Blend::Add => PictOp::ADD,
+        };
+        let sx = d.src.w as f64 / d.dst.w as f64;
+        let sy = d.src.h as f64 / d.dst.h as f64;
+        // The area composited, in screen pixels, and the transform from that area's pixels to
+        // image pixels (XRender transforms map destination to source).
+        let (bx, by, bw, bh, m) = if d.angle == 0.0 {
+            let m = [sx, 0.0, d.src.x as f64, 0.0, sy, d.src.y as f64];
+            (d.dst.x, d.dst.y, d.dst.w, d.dst.h, m)
+        } else {
+            let (cx, cy) = (d.dst.x as f64 + d.dst.w as f64 / 2.0, d.dst.y as f64 + d.dst.h as f64 / 2.0);
+            let (s, c) = (d.angle as f64).sin_cos();
+            let (hw, hh) = (d.dst.w as f64 / 2.0, d.dst.h as f64 / 2.0);
+            let ex = (hw * c).abs() + (hh * s).abs();
+            let ey = (hw * s).abs() + (hh * c).abs();
+            let (bx, by) = ((cx - ex).floor(), (cy - ey).floor());
+            // area pixel (i, j) -> screen (bx + i, by + j) -> rotate by -angle about the centre
+            // -> dst-local -> image
+            let (ox, oy) = (bx - cx, by - cy);
+            let (icx, icy) = (d.src.x as f64 + d.src.w as f64 / 2.0, d.src.y as f64 + d.src.h as f64 / 2.0);
+            let m = [c * sx, s * sx, (c * ox + s * oy) * sx + icx, -s * sy, c * sy, (-s * ox + c * oy) * sy + icy];
+            (bx as i32, by as i32, (2.0 * ex).ceil() as u32 + 1, (2.0 * ey).ceil() as u32 + 1, m)
+        };
+        let fx = |v: f64| -> Fixed { (v * 65536.0).round() as Fixed };
+        let t = Transform {
+            matrix11: fx(m[0]),
+            matrix12: fx(m[1]),
+            matrix13: fx(m[2]),
+            matrix21: fx(m[3]),
+            matrix22: fx(m[4]),
+            matrix23: fx(m[5]),
+            matrix31: 0,
+            matrix32: 0,
+            matrix33: fx(1.0),
+        };
+        self.conn.render_set_picture_transform(pict, t)?;
+        let (w, h) = (bw.min(u16::MAX as u32) as u16, bh.min(u16::MAX as u32) as u16);
+        match d.tint {
+            Some(tint) => {
+                let src = self.solid(tint.with_opacity(d.opacity))?;
+                self.conn.render_composite(op, src, pict, self.back_pict, 0, 0, 0, 0, bx as i16, by as i16, w, h)?;
+            }
+            None => {
+                let mask =
+                    if d.opacity >= 1.0 { x11rb::NONE } else { self.solid(Color::rgba(0, 0, 0, 255).with_opacity(d.opacity))? };
+                self.conn.render_composite(op, pict, mask, self.back_pict, 0, 0, 0, 0, bx as i16, by as i16, w, h)?;
+            }
+        }
+        Ok(())
     }
 
     fn draw_text(&mut self, x: i32, y: i32, size: u16, color: Color, align: Align, text: &str) -> Result<(), Error> {
@@ -232,6 +347,7 @@ impl Renderer for XRenderer {
                     self.conn.render_fill_rectangles(PictOp::OVER, self.back_pict, xcolor(*color), &[r])?;
                 }
                 Primitive::Text { x, y, size, color, align, text } => self.draw_text(*x, *y, *size, *color, *align, text)?,
+                Primitive::Image(d) => self.draw_image(d)?,
             }
         }
         self.conn.render_composite(

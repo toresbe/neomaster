@@ -43,6 +43,9 @@ Debug connection (off by default; see doc/debug-connection.md):
                       read-only unless --debug-tcp-inject ($NEOMASTER_DEBUG_TCP_INJECT=1)
   --debug-record FILE record everything from start-up to a JSON Lines file
                       ($NEOMASTER_DEBUG_RECORD)
+
+  NEOMASTER_STOCK_ASSETS=DIR  with --sim: draw with the BM5's own font and textures, read from
+              DIR (its Windows disk, e.g. /mnt/A); without it the UI draws look-alikes
 ";
 
 /// Which PC2 the core talks to.
