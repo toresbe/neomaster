@@ -146,6 +146,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 // A.AUX plays the USB card; Music Assistant (N.MUSIC, N.RADIO) is not wired in yet.
                 AppEffect::Play(s) => {
                     info!("play {}", link::display_name(s));
+                    self.ui.set_playing(true);
                     let fx = if s == LocalSource::AAux {
                         if self.aux.card().is_none() {
                             info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
@@ -160,11 +161,14 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     info!("stop playback");
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
+                    // The stock UI blanks when its source stops and nothing local listens.
+                    let fx = self.ui.source_stopped(self.link.speakers(), now);
+                    self.effects(fx, now);
                 }
                 AppEffect::SourceKey { source, key } => info!("{}: Beo4 key {key:#04x}", link::display_name(source)),
                 AppEffect::SourceChannel { source, channel } => info!("{}: channel {channel}", link::display_name(source)),
                 AppEffect::Standby => {
-                    let fx = self.ui.blank();
+                    let fx = self.ui.blank(now);
                     self.effects(fx, now);
                 }
                 AppEffect::Volume(v) => self.ui.set_volume(v),
@@ -185,8 +189,19 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     }
                 }
                 Effect::Backlight(on) => {
-                    let r = if on { self.panel.wake() } else { self.panel.blank() };
+                    for r in if on { self.panel.wake() } else { self.panel.blank() } {
+                        self.panel_out.write(r);
+                    }
+                }
+                Effect::LedRefresh => {
+                    let r = self.panel.led_refresh();
                     self.panel_out.write(r);
+                }
+                // Blank-screen standby stops what plays locally. Music Assistant is not wired in
+                // yet; A.AUX is.
+                Effect::StopLocalPlayback => {
+                    let fx = self.aux.deselect();
+                    self.aux_effects(fx);
                 }
                 // Volume goes to the PC2 (audio master) or as Beo4 keys to the room's master
                 // (link source).
