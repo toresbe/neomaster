@@ -1,5 +1,7 @@
 #include "sources/spotify/spotify.hpp"
 #include <signal.h>
+#include <cstdlib>
+#include <string>
 #include <boost/log/trivial.hpp>
 #include "libpc2/pc2/pc2.hpp"
 #include "libpc2/pc2/beo4.hpp"
@@ -51,7 +53,32 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
         ConbeeInterface light;
 
     BM5PC2Interface() : spotify(this) {
-        this->address_mask = PC2Interface::address_mask_t::audio_master;
+        // NEOMASTER_ML_ROLE=source_center when another product is the audio master (the BeoMaster 5
+        // then only provides sources, and its panel/remote keys go to the room's master).
+        const char *role = std::getenv("NEOMASTER_ML_ROLE");
+        if (role && std::string(role) == "source_center")
+            this->address_mask = PC2Interface::address_mask_t::source_center;
+        else
+            this->address_mask = PC2Interface::address_mask_t::audio_master;
+    }
+
+    bool is_source_center() {
+        return this->address_mask == PC2Interface::address_mask_t::source_center;
+    }
+
+    // In source-center mode the original BM5 turns panel selections into the Beo4 key a remote would
+    // send to the room's master (here the video master), which then asks the audio master; volume
+    // and standby go there too. Returns true if the key was forwarded.
+    bool forward_to_room_master(Beo4::keycode keycode) {
+        uint8_t key;
+        switch (keycode) {
+            case Beo4::keycode::cd: key = 0x94; break;      // our music appears as N.MUSIC (7a)
+            case Beo4::keycode::tv: key = 0x80; break;
+            case 0x60: case 0x64: case 0x0c: key = keycode; break;   // volume up/down, standby
+            default: return false;
+        }
+        this->pc2->beolink->send_beo4_code(0xc0, key);
+        return true;
     }
 
     AudioMaster * audio_master() {
@@ -77,8 +104,10 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
 
     // Masterlink audio master hooks: a link room can ask for our Spotify source (A.MEM)
     bool ml_start_source(uint8_t src) override {
-        if (src != spotify.masterlink_id) return false;
-        if (active_source != src) change_source(src);
+        // Our music is requested as spotify's id, or as N.MUSIC (7a), which is how the BM5's
+        // music source shows up in the rooms
+        if (src != spotify.masterlink_id && src != 0x7a) return false;
+        if (active_source != spotify.masterlink_id) change_source(spotify.masterlink_id);
         return true;
     }
 
@@ -91,13 +120,19 @@ class BM5PC2Interface: public PC2Interface, public INeomaster {
     }
 
     void ml_source_key(uint8_t src, uint8_t key) override {
-        if (src == active_source) send_key_to_source((Beo4::keycode)key);
+        if (src == active_source || (src == 0x7a && active_source == spotify.masterlink_id))
+            send_key_to_source((Beo4::keycode)key);
     }
 
     void beo4_press(Beo4::keycode keycode) {
         if (light.handle_keycode(keycode)) return;
 
         send_key_to_source(keycode);
+
+        if (is_source_center()) {
+            forward_to_room_master(keycode);
+            return;
+        }
 
         if (keycode == Beo4::keycode::cd) {
             this->pc2->device->send_message({0xe4, 0x01});
