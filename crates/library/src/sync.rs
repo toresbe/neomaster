@@ -241,7 +241,11 @@ impl Inner {
             match self.mirror_playlist(id.clone()).await {
                 Ok(()) => n += 1,
                 Err(Error::Ma(ma_client::Error::Disconnected)) => return Err(Error::Ma(ma_client::Error::Disconnected)),
-                Err(e) => warn!("playlist {id}: {e}"),
+                Err(e) => {
+                    warn!("playlist {id}: {e}");
+                    let (i, ts) = (id.clone(), now());
+                    self.db(move |s| s.mark_playlist_fetched(&i, ts)).await?;
+                }
             }
         }
         info!("mirrored {n} playlists in {} ms", t0.elapsed().as_millis());
