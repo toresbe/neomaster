@@ -17,6 +17,8 @@ pc2 = { path = "crates/pc2" }
 bs5-panel = { path = "crates/bs5-panel" }
 render = { path = "crates/render", default-features = false }
 ui = { path = "crates/ui" }
+ma-client = { path = "crates/ma-client" }
+library = { path = "crates/library" }
 log = "0.4"
 
 [profile.release]

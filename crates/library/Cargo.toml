@@ -1,9 +1,25 @@
 [package]
 name = "library"
+description = "Local mirror of the Music Assistant library and pre-baked cover atlas for neomaster"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]
+ma-client.workspace = true
+log.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde_json = "1"
+thiserror = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+ureq = { version = "3", default-features = false }
+zune-jpeg = "0.4"
+fast_image_resize = "6"
+memmap2 = "0.9"
+
+[dev-dependencies]
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+tempfile = "3"

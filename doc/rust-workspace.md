@@ -13,8 +13,8 @@ what exists and how to build it.
 | `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; USB adapter not written yet (M4) |
 | `crates/render` | Scene types, glyph rasterising (fontdue), XRender backend (x11rb) | Fills and text; covers come with M2 |
 | `crates/ui` | Pointer zones, views, navigation, animation; state in, scene out | List, cover arc (placeholder tiles), now-playing, context menu, volume, idle and blanking, on fake data |
-| `crates/ma-client` | Music Assistant client | Placeholder (M3) |
-| `crates/library` | Local mirror and cover atlas | Placeholder (M3) |
+| `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
+| `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/neomaster` | The binary: core task, actors, `--sim` | Core loop and simulator run |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
