@@ -3,6 +3,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -25,3 +26,7 @@ log = "0.4"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# opus-rs does not build for 32-bit x86 upstream; see vendor/opus-rs/NEOMASTER-PATCH.md.
+[patch.crates-io]
+opus-rs = { path = "vendor/opus-rs" }

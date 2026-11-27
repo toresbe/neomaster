@@ -1,0 +1,21 @@
+[package]
+name = "player"
+description = "Sendspin audio player for the BeoMaster 5: makes the BM5 a Music Assistant playback device"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+log.workspace = true
+sendspin = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+parking_lot = "0.12"
+cpal = "0.18"
+thiserror = "2"
+
+[dev-dependencies]
+ma-client.workspace = true
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
