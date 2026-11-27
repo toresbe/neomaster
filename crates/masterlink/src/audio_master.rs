@@ -161,7 +161,7 @@ impl AudioMaster {
                 tt::STATUS,
                 pt::AUDIO_BUS,
                 ml::audio_bus::SUBTYPE_BUSY,
-                ml::audio_bus::busy(self.source),
+                ml::audio_bus::busy(self.source, false),
             ));
         } else {
             host.send_telegram(Self::make(to, tt::STATUS, pt::AUDIO_BUS, ml::audio_bus::SUBTYPE_FREE, vec![]));
@@ -394,8 +394,9 @@ impl AudioMaster {
         }
     }
 
-    /// LOCK_MANAGER: broadcast REQUEST; the current holder answers STATUS; we take it over with
-    /// COMMAND to the holder. If nobody answers, nobody holds it.
+    /// LOCK_MANAGER: broadcast REQUEST; the current holder answers STATUS KEY_TRANSFER (or
+    /// TRANSFER_IMPOSSIBLE if it still needs the key); we confirm with COMMAND KEY_RECEIVED to the
+    /// giver. If nobody answers, nobody holds it.
     fn with_lock(&mut self, host: &mut dyn Host, action: LockAction, now: Time) {
         if self.lock_mode == LockMode::Off || self.holds_lock {
             self.run_lock_action(host, action);
@@ -443,17 +444,21 @@ impl AudioMaster {
                     t.src_node,
                     tt::STATUS,
                     pt::LOCK_MANAGER,
-                    ml::lock_manager::SUBTYPE_HOLDER,
+                    ml::lock_manager::SUBTYPE_KEY_TRANSFER,
                     vec![ml::lock_manager::PAYLOAD],
                 ));
             }
-        } else if t.telegram_type == tt::STATUS && to_us && self.lock_pending {
-            // The holder hands it to us
+        } else if t.telegram_type == tt::STATUS
+            && to_us
+            && self.lock_pending
+            && t.subtype == ml::lock_manager::SUBTYPE_KEY_TRANSFER
+        {
+            // The holder hands it to us (TRANSFER_IMPOSSIBLE leaves us waiting until the lock timeout)
             host.send_telegram(Self::make(
                 t.src_node,
                 tt::COMMAND,
                 pt::LOCK_MANAGER,
-                ml::lock_manager::SUBTYPE_TAKE,
+                ml::lock_manager::SUBTYPE_KEY_RECEIVED,
                 vec![ml::lock_manager::PAYLOAD],
             ));
             self.lock_acquired(host);

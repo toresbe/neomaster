@@ -60,7 +60,7 @@ release binary.
 
 ## The libpc2 port
 
-Ported from toresbe/libpc2 master at 9656831.
+Ported from toresbe/libpc2 master at 4b61da8 (including libpc2 PR #5: KEY_TRANSFER-only lock grants and the renamed protocol constants).
 
 | libpc2 | Rust |
 |---|---|

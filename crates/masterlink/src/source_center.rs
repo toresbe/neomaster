@@ -103,7 +103,7 @@ impl SourceCenter {
             tt::COMMAND,
             pt::IR_SIMUL_LOW,
             ml::ir_simul::SUBTYPE,
-            ml::ir_simul::key(key),
+            ml::ir_simul::key(key, ml::ir_simul::Destination::AudioSource),
             ml::source::PC,
             0,
             from,
