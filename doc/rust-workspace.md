@@ -19,6 +19,7 @@ what exists and how to build it.
 | `crates/radio` | N.RADIO presets: numbered list (TOML), Beo4 digit entry and ▲ ▼, channel -> preset, MA station lookup and playback | Wired into the binary; plays through MA (see doc/n-radio-presets.md) |
 | `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
 | `crates/settings` | The settings file (typed, versioned TOML, atomic save), the old environment variables as overrides, the Roles / source-name rules from MLConfig.dll, and the stock SETTINGS menu as data | Read at start, saved from the panel; the SETTINGS menu is drawn by `ui` |
+| `tools/bringup` | Hardware bring-up kit (M0): render benchmark (XRender / software blitter, EXA / NoAccel), panel probe, Sendspin player bench, PC2 smoke test, one-command run on the box | See `tools/bringup/README.md` |
 | `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state

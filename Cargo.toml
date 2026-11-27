@@ -2,7 +2,7 @@
 # The C++ neomaster (CMakeLists.txt, *.cpp) stays alongside until the Rust one replaces it.
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "tools/bringup"]
 exclude = ["vendor"]
 
 [workspace.package]

@@ -1,0 +1,35 @@
+[package]
+name = "bringup"
+description = "Hardware bring-up kit for the BeoMaster 5: render benchmark, panel probe, Sendspin player bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "nm-xbench"
+path = "src/bin/nm-xbench.rs"
+
+[[bin]]
+name = "nm-panel-probe"
+path = "src/bin/nm-panel-probe.rs"
+
+[[bin]]
+name = "nm-player-bench"
+path = "src/bin/nm-player-bench.rs"
+
+[dependencies]
+bs5-panel.workspace = true
+render = { workspace = true, features = ["xrender"] }
+ui.workspace = true
+player = { path = "../../crates/player" }
+ma-client.workspace = true
+log.workspace = true
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+x11rb = { version = "0.13", default-features = false, features = ["render"] }
+nusb = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde_json = "1"
+libc = "0.2"

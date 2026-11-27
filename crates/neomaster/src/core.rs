@@ -699,10 +699,12 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         loop {
             let now = self.now();
             let wake = tokio::time::Instant::from_std(self.epoch + self.deadline(now));
-            let started = Instant::now();
+            // Set when the loop wakes, so handle_us is the work and not the wait before it.
+            let started;
             let mut events_handled = 0;
             let redraw = tokio::select! {
                 ev = events.recv() => {
+                    started = Instant::now();
                     let Some(ev) = ev else { return };
                     // Handle everything that is already queued, then draw once.
                     let mut batch = vec![ev];
@@ -722,6 +724,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     redraw
                 }
                 _ = sleep_until(wake) => {
+                    started = Instant::now();
                     let now = self.now();
                     let ui_due = self.ui_deadline(now).is_some_and(|d| d <= now);
                     for input in self.decoder.tick(now) {
