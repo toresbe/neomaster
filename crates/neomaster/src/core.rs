@@ -18,6 +18,7 @@ use ui::{Effect, Ui};
 
 use crate::debug::{self, Inject, Tap};
 use crate::link::{self, AppEffect, Link, Outputs, Pc2Cmd};
+use crate::radio_actor::{NoRadio, RadioCmd, RadioOut};
 
 /// Time since the core started.
 pub type Time = Duration;
@@ -40,6 +41,11 @@ pub enum Event {
     AuxCard(Option<a_aux::Card>),
     /// The screen needs redrawing (window exposed).
     Redraw,
+    /// The N.RADIO actor matched preset `number`'s name to this Music Assistant station.
+    RadioResolved {
+        number: u8,
+        uri: String,
+    },
     /// From a debug client (see [`crate::debug`]).
     Debug(Inject),
     Quit,
@@ -103,6 +109,13 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
     pc2_connected: bool,
     /// The last `state` record's contents, to report what changed.
     last_state: Option<Value>,
+    /// N.RADIO: which preset a channel number, Beo4 key or the panel asks for.
+    tuner: radio::Tuner,
+    radio_out: Box<dyn RadioOut>,
+    /// The preset playing through Music Assistant (0: N.RADIO is not playing).
+    radio_playing: u8,
+    /// A preset picked on the panel while N.RADIO waits to be connected (link source role).
+    radio_pending: Option<u8>,
 }
 
 impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
@@ -127,7 +140,18 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             panel_buttons: 0,
             pc2_connected: false,
             last_state: None,
+            tuner: radio::Tuner::default(),
+            radio_out: Box::new(NoRadio),
+            radio_playing: 0,
+            radio_pending: None,
         }
+    }
+
+    /// N.RADIO's presets and where its commands go (the actor in [`crate::radio_actor`]).
+    pub fn with_radio(mut self, tuner: radio::Tuner, out: impl RadioOut + 'static) -> Self {
+        self.tuner = tuner;
+        self.radio_out = Box::new(out);
+        self
     }
 
     /// Send debug records here instead of to [`Tap::global`].
@@ -158,8 +182,53 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         self.aux_effects(fx);
     }
 
+    /// Start a preset the tuner chose, unless it is already the one playing.
+    fn radio_tune(&mut self, tune: Option<radio::Tune>) {
+        let Some(t) = tune else { return };
+        if self.radio_playing == t.preset.number {
+            return;
+        }
+        self.radio_playing = t.preset.number;
+        self.tap.emit("radio", || json!({ "preset": t.preset.number, "name": t.preset.name, "uri": t.preset.uri }));
+        self.radio_out.send(RadioCmd::Play(t.preset));
+        self.radio_save();
+    }
+
+    /// N.RADIO is no longer the source: stop its Music Assistant queue.
+    fn radio_stop(&mut self) {
+        if self.radio_playing != 0 {
+            self.radio_playing = 0;
+            self.tuner.stopped();
+            self.radio_out.send(RadioCmd::Stop);
+        }
+    }
+
+    fn radio_save(&mut self) {
+        if self.tuner.take_dirty() {
+            self.radio_out.send(RadioCmd::Save(self.tuner.presets().clone()));
+        }
+    }
+
+    /// A preset picked on the panel (or by a debug client): N.RADIO at that number.
+    fn radio_preset(&mut self, number: u8, now: Time) {
+        if self.link.snapshot().playing == Some(LocalSource::NRadio) {
+            let t = self.tuner.channel(number);
+            self.radio_tune(t);
+            return;
+        }
+        self.radio_pending = Some(number);
+        let out = self.link.select_source(LocalSource::NRadio, now);
+        self.link_out(out, now);
+    }
+
     /// Carry out what the link glue decided: PC2 messages to the actor, player effects here.
     fn link_out(&mut self, out: Outputs, now: Time) {
+        // A room that connects N.RADIO at a channel (a timer's preset) sends both; start that
+        // preset rather than the last one and then the asked-for one.
+        let radio_channel = out.app.iter().find_map(|e| match e {
+            AppEffect::SourceChannel { source: LocalSource::NRadio, channel } => Some(*channel),
+            _ => None,
+        });
         for cmd in out.pc2 {
             match &cmd {
                 Pc2Cmd::Telegram(t) => self.tap.emit("ml_out", || debug::telegram_fields(t)),
@@ -170,10 +239,23 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         for e in out.app {
             self.tap.emit("app_effect", || json!({ "effect": format!("{e:?}") }));
             match e {
-                // A.AUX plays the USB card; Music Assistant (N.MUSIC, N.RADIO) is not wired in yet.
+                // A.AUX plays the USB card, N.RADIO a preset through Music Assistant; N.MUSIC is
+                // not wired in yet.
                 AppEffect::Play(s) => {
                     info!("play {}", link::display_name(s));
                     self.ui.set_playing(true);
+                    if s == LocalSource::NRadio {
+                        let tune = match radio_channel.or(self.radio_pending.take()) {
+                            Some(n) => self.tuner.channel(n).or_else(|| self.tuner.resume()),
+                            None => self.tuner.resume(),
+                        };
+                        if tune.is_none() {
+                            info!("N.RADIO: no presets (see {})", radio::store::default_path().display());
+                        }
+                        self.radio_tune(tune);
+                    } else {
+                        self.radio_stop();
+                    }
                     let fx = if s == LocalSource::AAux {
                         if self.aux.card().is_none() {
                             info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
@@ -186,13 +268,24 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 }
                 AppEffect::Stop => {
                     info!("stop playback");
+                    self.radio_stop();
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                     // The stock UI blanks when its source stops and nothing local listens.
                     let fx = self.ui.source_stopped(self.link.speakers(), now);
                     self.effects(fx, now);
                 }
+                AppEffect::SourceKey { source: LocalSource::NRadio, key } => {
+                    let t = self.tuner.key(key, now);
+                    self.radio_tune(t);
+                }
                 AppEffect::SourceKey { source, key } => info!("{}: Beo4 key {key:#04x}", link::display_name(source)),
+                AppEffect::SourceChannel { source: LocalSource::NRadio, channel } => {
+                    // When it came with the Play above, that preset is already playing and
+                    // radio_tune leaves it be.
+                    let t = self.tuner.channel(channel);
+                    self.radio_tune(t);
+                }
                 AppEffect::SourceChannel { source, channel } => info!("{}: channel {channel}", link::display_name(source)),
                 AppEffect::Standby => {
                     let fx = self.ui.blank(now);
@@ -239,6 +332,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 // Blank-screen standby stops what plays locally. Music Assistant is not wired in
                 // yet; A.AUX is.
                 Effect::StopLocalPlayback => {
+                    self.radio_stop();
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                 }
@@ -278,7 +372,10 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
 
     /// When the UI next needs a tick or a frame.
     fn ui_deadline(&self, now: Time) -> Option<Time> {
-        [self.ui.next_timer(), self.ui.next_frame(now), self.decoder.next_deadline()].into_iter().flatten().min()
+        [self.ui.next_timer(), self.ui.next_frame(now), self.decoder.next_deadline(), self.tuner.next_deadline()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// Handle one event. Returns false if the screen cannot have changed.
@@ -349,6 +446,12 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 self.aux_card(card);
                 return false;
             }
+            Event::RadioResolved { number, uri } => {
+                if self.tuner.presets_mut().set_uri(number, &uri) {
+                    self.radio_save();
+                }
+                return false;
+            }
             Event::Redraw => {}
             Event::Debug(i) => return self.inject(i, now),
             Event::Quit => {}
@@ -416,6 +519,10 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 self.emit_state(true);
                 false
             }
+            Inject::RadioPreset(n) => {
+                self.radio_preset(n, now);
+                true
+            }
         }
     }
 
@@ -438,6 +545,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             "ui_volume": self.ui.volume(),
             "blanked": self.ui.blanked(),
             "aux_card": self.aux.card().map(|c| c.to_string()),
+            "radio_preset": self.tuner.current().map(|p| json!({ "number": p.number, "name": p.name })),
         })
     }
 
@@ -507,6 +615,8 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     }
                     let fx = self.ui.tick(now);
                     self.effects(fx, now);
+                    let t = self.tuner.tick(now);
+                    self.radio_tune(t);
                     let out = self.link.tick(now);
                     self.link_out(out, now);
                     ui_due
@@ -556,6 +666,96 @@ mod tests {
         fn ended(&mut self) -> bool {
             false
         }
+    }
+
+    fn presets() -> radio::Presets {
+        let mut p = radio::Presets::default();
+        for (n, name) in [(1, "NRK P1"), (8, "Deutschlandfunk"), (12, "Radio Paradise")] {
+            p.set(radio::Preset::new(n, name, format!("library://radio/{n}")));
+        }
+        p.last = 12;
+        p
+    }
+
+    /// Run `events` through a core in `role` with the presets above; return the N.RADIO commands.
+    async fn radio_run(role: LinkRole, events: Vec<Event>) -> Vec<RadioCmd> {
+        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+        let (radio_tx, mut radio_rx) = mpsc::unbounded_channel::<RadioCmd>();
+        let link = Link::new(link::Config::new(role));
+        let core = Core::new(Ui::new(ui::fake::Library::generate()), NoPanel, NoAux, link, pc2_tx, scene_tx)
+            .with_tap(Tap::new())
+            .with_radio(radio::Tuner::new(presets()), radio_tx);
+        let (ev_tx, ev_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(core.run(ev_rx));
+        for e in events {
+            ev_tx.send(e).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        ev_tx.send(Event::Quit).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+        let mut cmds = vec![];
+        while let Ok(c) = radio_rx.try_recv() {
+            cmds.push(c);
+        }
+        cmds
+    }
+
+    fn plays(cmds: &[RadioCmd]) -> Vec<u8> {
+        cmds.iter().filter_map(|c| if let RadioCmd::Play(p) = c { Some(p.number) } else { None }).collect()
+    }
+
+    fn telegram(hex: &str) -> Event {
+        Event::Debug(Inject::TelegramIn(debug::inject::telegram(hex).unwrap()))
+    }
+
+    /// This morning's Beosystem 3 wake-up timer (work/ml_wake_timer_0700.txt): the audio master
+    /// asks us, the link source, for N.RADIO at channel 8, then again without the timer flag.
+    /// Preset 8 plays once, without the last preset (12) starting first; RELEASE stops it.
+    #[tokio::test]
+    async fn wake_up_timer_plays_preset_8() {
+        let cmds = radio_run(
+            LinkRole::SourceCenter,
+            vec![
+                Event::Pc2Connected,
+                telegram("c2c1010ba100006c0a0100000800020201030c00"),
+                telegram("c2c1010ba100006c0a0100000800020201ff0200"),
+                telegram("c2c1010aa10000110002"),
+            ],
+        )
+        .await;
+        assert_eq!(plays(&cmds), [8], "{cmds:?}");
+        assert!(matches!(cmds.last(), Some(RadioCmd::Stop)), "{cmds:?}");
+        let saved = cmds.iter().find_map(|c| if let RadioCmd::Save(p) = c { Some(p.last) } else { None });
+        assert_eq!(saved, Some(8), "the last preset is saved");
+    }
+
+    /// Audio master: the N.RADIO key resumes the last preset, then Beo4 digits and arrows tune.
+    #[tokio::test]
+    async fn beo4_digits_and_arrows_pick_presets() {
+        let ir = |code| Event::Pc2(pc2::Event::Beo4Key { kind: 0x01, code });
+        let n_radio = masterlink::SourceMap::new(LinkRole::AudioMaster).beo4_key(LocalSource::NRadio);
+        let cmds = radio_run(
+            LinkRole::AudioMaster,
+            vec![
+                Event::Pc2Connected,
+                ir(n_radio),
+                ir(pc2::beo4::DIGIT_8),
+                ir(pc2::beo4::DIGIT_1),
+                ir(pc2::beo4::DIGIT_2),
+                ir(pc2::beo4::ARROW_UP),
+                Event::Debug(Inject::RadioPreset(8)),
+            ],
+        )
+        .await;
+        assert_eq!(plays(&cmds), [12, 8, 12, 1, 8], "{cmds:?}");
+    }
+
+    /// A preset picked on the panel selects N.RADIO at that number.
+    #[tokio::test]
+    async fn panel_pick_selects_n_radio_at_the_preset() {
+        let cmds = radio_run(LinkRole::AudioMaster, vec![Event::Pc2Connected, Event::Debug(Inject::RadioPreset(1))]).await;
+        assert_eq!(plays(&cmds), [1], "{cmds:?}");
     }
 
     /// The core with a debug tap: injected input takes the real path, and the stream shows it.

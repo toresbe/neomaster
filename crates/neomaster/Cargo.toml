@@ -13,6 +13,8 @@ masterlink.workspace = true
 pc2.workspace = true
 render = { workspace = true, features = ["xrender"] }
 ui.workspace = true
+radio.workspace = true
+ma-client.workspace = true
 log.workspace = true
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util"] }

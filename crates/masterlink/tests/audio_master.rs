@@ -7,7 +7,7 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::*;
-use masterlink::{AudioMaster, BusState, LockMode, Time};
+use masterlink::{AudioMaster, BusState, LockMode, Telegram, Time};
 
 mod vectors {
     use super::common::Row;
@@ -388,4 +388,22 @@ fn lock_firmware_mode_ignores_lock_telegrams() {
     let ask = incoming(&[0x80, 0x04, 0x01, 0x0b, 0x00, 0x00, 0x00, 0x5c, 0x01, 0x01, 0x01]);
     am.handle(&mut host, &ask, at(0.0));
     assert_eq!(host.sent.len(), 0);
+}
+
+/// GOTO_SOURCE (LINK_CONNECT_COMMAND_1) byte 2 is the channel: a Beosystem 3 wake-up timer
+/// asked for N.RADIO preset 8 this way (work/ml_wake_timer_0700.txt, 06:59:52.812, MLGW form).
+#[test]
+fn goto_source_passes_the_channel_number() {
+    let (mut am, mut host) = am_2018();
+    let goto = [
+        0xc1, 0xc0, 0x01, 0x0b, 0x00, 0x00, 0x00, 0x45, 0x0d, 0x01, 0x02, 0xa1, 0x08, 0x02, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x03, 0x0c, 0x00,
+    ];
+    let t = Telegram::decode(&goto).unwrap();
+    am.handle(&mut host, &t, at(0.0));
+    assert_eq!(host.started, vec![0xa1]);
+    assert_eq!(host.channels, vec![(0xa1, 8)]);
+    // our own requests carry 00 there: no channel
+    use masterlink::protocol::link_connect::{connect_request, requested_channel};
+    assert_eq!(requested_channel(&connect_request(0xa1)), None);
 }

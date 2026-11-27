@@ -642,7 +642,12 @@ impl AudioMaster {
                 pt::LINK_CONNECT_1 => {
                     // CONNECT: payload byte 1 is the source
                     if t.payload.len() >= 2 {
-                        self.connect_request(host, from, t.payload[1], now);
+                        let src = t.payload[1];
+                        self.connect_request(host, from, src, now);
+                        // byte 2: a channel to start at (a timer's N.RADIO preset)
+                        if let Some(channel) = lc::requested_channel(&t.payload) {
+                            host.source_channel(src, channel);
+                        }
                     }
                 }
                 pt::LINK_CONNECT_0 => {

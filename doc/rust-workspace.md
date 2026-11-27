@@ -16,6 +16,7 @@ what exists and how to build it.
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
+| `crates/radio` | N.RADIO presets: numbered list (TOML), Beo4 digit entry and ▲ ▼, channel -> preset, MA station lookup and playback | Wired into the binary; plays through MA (see doc/n-radio-presets.md) |
 | `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
 | `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 

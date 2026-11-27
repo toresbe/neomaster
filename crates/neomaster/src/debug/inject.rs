@@ -27,6 +27,8 @@ pub enum Inject {
     AllStandby,
     /// Emit a full `state` record now.
     Snapshot,
+    /// Play N.RADIO preset N, as picking it on the panel will.
+    RadioPreset(u8),
 }
 
 /// A number as JSON gives it, or a string like `"0x94"`.
@@ -97,6 +99,10 @@ pub enum Command {
     Standby,
     AllStandby,
     State,
+    /// N.RADIO preset `preset` (1-99), as if picked on the panel.
+    Radio {
+        preset: u8,
+    },
     /// Put a note in the stream (and so in recordings), e.g. "the list froze here".
     Mark {
         text: String,
@@ -165,6 +171,12 @@ impl Command {
             Command::Standby => Inject::Standby,
             Command::AllStandby => Inject::AllStandby,
             Command::State => Inject::Snapshot,
+            Command::Radio { preset } => {
+                if !(1..=radio::MAX_NUMBER).contains(preset) {
+                    return Err(format!("presets run 1-{}", radio::MAX_NUMBER));
+                }
+                Inject::RadioPreset(*preset)
+            }
         }))
     }
 

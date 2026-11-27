@@ -327,6 +327,15 @@ pub mod link_connect {
     /// in the answer to the request
     pub const WANTED_BYTE11_ANSWER: u8 = 0x03;
 
+    /// LINK_CONNECT_COMMAND_1 (GOTO_SOURCE) byte 2: the channel or track a room asks for, as in
+    /// SOURCE_CONNECT. Observed: a Beosystem 3 wake-up timer for N.RADIO preset 8 sent
+    /// `02 a1 08 02 01 00 01 00 00 00 03 0c 00`, and the follow-up request `02 a1 08 02 01 00 00`
+    /// (work/ml_wake_timer_0700.txt); our own requests carry 00 there ([`BYTE2`]). `None` for
+    /// 00 and ff.
+    pub fn requested_channel(payload: &[u8]) -> Option<u8> {
+        payload.get(2).copied().filter(|&c| c != 0x00 && c != 0xff)
+    }
+
     /// 02 <src> 00 02 <audio> <video>
     pub fn head(src: u8) -> Vec<u8> {
         vec![link_type::AUDIO, src, BYTE2, BYTE3, link::ON, link::OFF]
