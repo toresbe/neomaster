@@ -9,20 +9,23 @@ mod debug;
 mod link;
 mod pc2_actor;
 mod radio_actor;
+mod settings_rt;
 mod sim;
 mod sim_pc2;
 
 use std::process::ExitCode;
 use std::sync::mpsc as std_mpsc;
 
+use std::path::PathBuf;
+
 use masterlink::LinkRole;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::core::{Core, Event};
 use crate::link::{Link, Pc2Cmd};
 
-const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [DEBUG OPTIONS]
-       neomaster --headless [--role ROLE] [DEBUG OPTIONS]
+const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [--config FILE] [DEBUG OPTIONS]
+       neomaster --headless [--role ROLE] [--config FILE] [DEBUG OPTIONS]
        neomaster debug COMMAND   (the debug client; neomaster debug --help)
 
   --sim       run the panel UI in a 1024x768 X11 window; the keyboard stands in for the panel
@@ -30,9 +33,12 @@ const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [DEBUG OPTIONS
   --usb       with --sim: drive the real PC2 over USB instead of the simulated one
   --headless  no panel or screen: run the Masterlink loop on the real PC2 only (link rooms,
               IR, standby), e.g. on the BM5 before the panel actor exists
-  --role ROLE audio-master or link-source (default: $NEOMASTER_ML_ROLE, else link-source).
-              link-source is AUDIO MASTER off: the BM5 provides sources for another
-              product's audio master and sends its panel keys to the room's master
+  --role ROLE audio-master or link-source, for this run only (default: Settings > Roles >
+              AUDIO MASTER, or $NEOMASTER_ML_ROLE). link-source is AUDIO MASTER off: the BM5
+              provides sources for another product's audio master and sends its panel keys
+              to the room's master
+  --config FILE  the settings file (default: $NEOMASTER_CONFIG, else
+              /etc/neomaster/settings.toml as root, else ~/.config/neomaster/settings.toml)
   --keys      print the simulator's key bindings
 
 Debug connection (off by default; see doc/debug-connection.md):
@@ -56,12 +62,27 @@ pub enum Pc2Device {
     Simulated,
 }
 
-fn parse_role(s: &str) -> Option<LinkRole> {
-    match s {
-        "audio-master" | "audio_master" | "am" => Some(LinkRole::AudioMaster),
-        // source_center: the C++ neomaster's NEOMASTER_ML_ROLE value
-        "link-source" | "link_source" | "source-center" | "source_center" | "sc" => Some(LinkRole::SourceCenter),
-        _ => None,
+/// Everything the core needs from the settings, loaded once at start.
+pub struct Startup {
+    pub settings: settings::Settings,
+    pub persister: settings_rt::Persister,
+}
+
+impl Startup {
+    pub fn role(&self) -> LinkRole {
+        self.settings.roles.link_role()
+    }
+
+    /// Wire the settings into a core and start the A.AUX card poll that follows them.
+    pub fn attach<P: core::PanelOut, A: core::AuxOut, Q: core::Pc2Out>(
+        self,
+        rt: &tokio::runtime::Runtime,
+        core: Core<P, A, Q>,
+        events: mpsc::UnboundedSender<Event>,
+    ) -> Core<P, A, Q> {
+        let (card_tx, card_rx) = watch::channel(self.settings.aux.card.clone());
+        rt.spawn(core::poll_aux_card_choice(events.clone(), card_rx));
+        core.with_settings(self.settings, Box::new(self.persister), events, Some(card_tx))
     }
 }
 
@@ -97,7 +118,8 @@ pub fn debug_hello(mode: &str, role: LinkRole, device: Pc2Device) -> serde_json:
     serde_json::json!({ "mode": mode, "role": format!("{role:?}"), "pc2_device": format!("{device:?}") })
 }
 
-fn headless(role: LinkRole, debug_cfg: &debug::Config) -> Result<(), Box<dyn std::error::Error>> {
+fn headless(startup: Startup, debug_cfg: &debug::Config) -> Result<(), Box<dyn std::error::Error>> {
+    let role = startup.role();
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
     debug::server::start(&rt, debug_cfg, event_tx.clone(), debug_hello("headless", role, Pc2Device::Usb))?;
@@ -110,12 +132,12 @@ fn headless(role: LinkRole, debug_cfg: &debug::Config) -> Result<(), Box<dyn std
         fn write(&mut self, _: [u8; 2]) {}
     }
     let ui = ui::Ui::new(ui::fake::Library::generate());
-    let link = Link::new(link::Config::new(role));
-    let (tuner, radio_tx) = radio_actor::spawn(&rt, event_tx.clone());
-    rt.spawn(core::poll_aux_card(event_tx));
-    let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());
+    let link = Link::new(link::Config::from_settings(&startup.settings));
+    let (tuner, radio_tx) = radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
+    let aux_out = a_aux::loopback::Loopback::new(settings_rt::loopback_config(&startup.settings.aux));
     log::info!("Running headless as {role:?}; Ctrl-C to quit");
-    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).with_radio(tuner, radio_tx).run(event_rx));
+    let core = startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx).with_radio(tuner, radio_tx);
+    rt.block_on(core.run(event_rx));
     Ok(())
 }
 
@@ -124,7 +146,9 @@ fn main() -> ExitCode {
     if args.first().is_some_and(|a| a == "debug") {
         return debug::client::main(&args[1..]);
     }
-    debug::logger::TapLogger::init(&mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")));
+    // Built at debug level so DEBUG LOGGING can raise the cap later (settings_rt).
+    debug::logger::TapLogger::init(&mut env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")));
+    settings_rt::set_debug_logging(false);
     let mut debug_cfg = match debug::Config::from_env() {
         Ok(c) => c,
         Err(e) => {
@@ -132,7 +156,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut role = std::env::var("NEOMASTER_ML_ROLE").ok().and_then(|r| parse_role(&r)).unwrap_or(LinkRole::SourceCenter);
+    let mut role = None;
+    let mut config = None;
     let mut device = Pc2Device::Simulated;
     let mut mode = None;
     let mut it = args.iter();
@@ -159,8 +184,15 @@ fn main() -> ExitCode {
                     },
                 }
             }
-            "--role" => match it.next().and_then(|r| parse_role(r)) {
-                Some(r) => role = r,
+            "--config" => match it.next() {
+                Some(p) => config = Some(PathBuf::from(p)),
+                None => {
+                    eprint!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            },
+            "--role" => match it.next().and_then(|r| settings::env::parse_role(r)) {
+                Some(r) => role = Some(r),
                 None => {
                     eprint!("{USAGE}");
                     return ExitCode::FAILURE;
@@ -172,9 +204,13 @@ fn main() -> ExitCode {
             }
         }
     }
+    let startup = || {
+        let (settings, persister) = settings_rt::load(config.clone().unwrap_or_else(settings::store::default_path), role);
+        Startup { settings, persister }
+    };
     let result = match mode {
-        Some("--sim") => sim::run(role, device, &debug_cfg),
-        Some("--headless") => headless(role, &debug_cfg),
+        Some("--sim") => sim::run(startup(), device, &debug_cfg),
+        Some("--headless") => headless(startup(), &debug_cfg),
         Some("--keys") => {
             print!("{}", sim::KEYS);
             return ExitCode::SUCCESS;

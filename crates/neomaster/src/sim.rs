@@ -22,7 +22,6 @@ use x11rb::rust_connection::RustConnection;
 use crate::core::{Core, Event, PanelOut};
 use crate::link::{self, Link};
 use crate::Pc2Device;
-use masterlink::LinkRole;
 
 pub const KEYS: &str = "\
 neomaster --sim keys (after BeoSound5.exe's own keyboard emulation of the panel):
@@ -46,7 +45,12 @@ impl PanelOut for NoPanel {
     }
 }
 
-pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    startup: crate::Startup,
+    device: Pc2Device,
+    debug_cfg: &crate::debug::Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let role = startup.role();
     let mut renderer = XRenderer::open_window("neomaster --sim", SCREEN_WIDTH, SCREEN_HEIGHT)?;
     // The stock look, where $NEOMASTER_STOCK_ASSETS points at the BM5's disk (see ui::assets).
     let assets = ui::Assets::from_env();
@@ -97,14 +101,14 @@ pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) 
     let ui = ui::Ui::with_assets(ui::fake::Library::generate(), assets);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     crate::debug::server::start(&rt, debug_cfg, event_tx.clone(), crate::debug_hello("sim", role, device))?;
-    let aux_tx = event_tx.clone();
-    rt.spawn(crate::core::poll_aux_card(aux_tx));
-    let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());
+    let aux_out = a_aux::loopback::Loopback::new(crate::settings_rt::loopback_config(&startup.settings.aux));
     info!("Masterlink role {role:?}, {device:?} PC2");
     let pc2 = crate::spawn_pc2(&rt, device, role, event_tx.clone());
-    let link = Link::new(link::Config::new(role));
-    let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, event_tx.clone());
-    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).with_radio(tuner, radio_tx).run(event_rx));
+    let link = Link::new(link::Config::from_settings(&startup.settings));
+    let (tuner, radio_tx) = crate::radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
+    let core =
+        startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx.clone()).with_radio(tuner, radio_tx);
+    rt.block_on(core.run(event_rx));
     drop(rt);
     let _ = render_thread.join();
     Ok(())

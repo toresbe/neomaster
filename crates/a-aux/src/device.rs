@@ -83,8 +83,22 @@ pub fn find_usb_audio_codec(cards: &[Card]) -> Option<Card> {
     cards.iter().find(|c| is_usb_audio_codec(&c.name) || is_usb_audio_codec(&c.long_name)).cloned()
 }
 
+/// The card to use: the one with ALSA id `id` if given (settings `aux.card`), else the first
+/// "USB Audio CODEC" as BeoSound5.exe picks it.
+pub fn find_card(cards: &[Card], id: Option<&str>) -> Option<Card> {
+    match id.filter(|i| !i.is_empty()) {
+        Some(id) => cards.iter().find(|c| c.id == id).cloned(),
+        None => find_usb_audio_codec(cards),
+    }
+}
+
 /// Read `/proc/asound/cards` and find the card. Missing file (no ALSA) = no card.
 pub fn scan() -> Option<Card> {
+    scan_for(None)
+}
+
+/// [`scan`], or the card with ALSA id `id`.
+pub fn scan_for(id: Option<&str>) -> Option<Card> {
     let text = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
-    find_usb_audio_codec(&parse_cards(&text))
+    find_card(&parse_cards(&text), id)
 }

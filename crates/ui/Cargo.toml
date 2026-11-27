@@ -10,3 +10,4 @@ license-file.workspace = true
 bs5-panel.workspace = true
 render.workspace = true
 log.workspace = true
+settings.workspace = true

@@ -37,6 +37,10 @@ pub enum Pc2Cmd {
     Message(pc2::Message),
     /// An encoded Masterlink telegram (checksum and EOT included); the actor paces it.
     Telegram(Vec<u8>),
+    /// Start the PC2 up again in another mode (AUDIO MASTER changed in the settings). The
+    /// actor closes and re-initialises it without reopening the device, then sends
+    /// `Event::Pc2Connected` as after a fresh open.
+    Restart(pc2::Mode),
 }
 
 /// What the player side of neomaster is asked to do.
@@ -119,6 +123,20 @@ impl Config {
             n_music: ml_source::N_MUSIC,
             n_radio: ml_source::N_RADIO,
         }
+    }
+
+    /// The link configuration the settings describe (role, AM option, source names, tone).
+    pub fn from_settings(s: &settings::Settings) -> Self {
+        let mut c = Config::new(s.roles.link_role());
+        c.system_configuration = s.roles.system_configuration();
+        c.room_master = s.link.room_master;
+        c.start_volume = s.link.start_volume;
+        c.bass = s.link.bass;
+        c.treble = s.link.treble;
+        c.loudness = s.link.loudness;
+        let map = s.roles.source_map();
+        (c.n_music, c.n_radio) = (map.n_music, map.n_radio);
+        c
     }
 
     /// The PC2 start-up mode for this role.

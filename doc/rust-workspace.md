@@ -18,6 +18,7 @@ what exists and how to build it.
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
 | `crates/radio` | N.RADIO presets: numbered list (TOML), Beo4 digit entry and ▲ ▼, channel -> preset, MA station lookup and playback | Wired into the binary; plays through MA (see doc/n-radio-presets.md) |
 | `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
+| `crates/settings` | The settings file (typed, versioned TOML, atomic save), the old environment variables as overrides, the Roles / source-name rules from MLConfig.dll, and the stock SETTINGS menu as data | Read at start, saved from the panel; the SETTINGS menu is drawn by `ui` |
 | `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
@@ -29,6 +30,7 @@ machine takes `now` as a `Duration` since a fixed epoch, so tests drive time dir
 cargo test                       # all crates, on the host
 cargo run -p neomaster -- --sim  # the UI in a 1024x768 window; `--keys` lists the bindings
 cargo run -p neomaster -- --sim --role audio-master   # the same with the other Masterlink role
+cargo run -p neomaster -- --sim --config /tmp/s.toml  # with a settings file of its own
 neomaster --headless             # on the BM5: the Masterlink loop on the real PC2, no panel
 neomaster --headless --debug     # the same, with the debug socket (doc/debug-connection.md)
 ```
@@ -143,7 +145,8 @@ What neomaster does:
 - `a_aux::AuxSource` plays the card while A.AUX is selected and the card is present. Unlike
   BeoSound5.exe it waits for a missing card and resumes after replugging.
 - `a_aux::loopback::Loopback` runs `alsaloop -C plughw:CARD=<id>,DEV=0 -P <playback> -t 50000`.
-  `NEOMASTER_AUX_PLAYBACK` picks the playback device, `NEOMASTER_AUX_LATENCY_US` the latency.
+  Settings `[aux]` pick the playback device (`playback`), the latency (`latency_us`) and,
+  optionally, the card by ALSA id (`card`; empty = the first "USB Audio CODEC").
   On the BM5 the A.AUX input is a built-in PCM2902 (USB 08bb:2902, ALSA card `CODEC`) and card 0
   is the VIA VT1708 onboard audio (`hw:VT82xx,0`), so `default` already plays to it.
 - The DMR half is not replicated; Music Assistant covers network streams.
@@ -169,9 +172,12 @@ What neomaster does:
   other `Play` or `Stop` stops it; Music Assistant (N.MUSIC, N.RADIO) is not wired in yet and is
   only logged. In the link source role A.AUX starts when the room's master connects us, since its
   audio reaches the room over the link.
-- **Role.** `--role audio-master|link-source`, else `NEOMASTER_ML_ROLE` (the C++ neomaster's
-  variable; `source_center` works), else link source: it never arbitrates for the bus, so a
-  wrong default cannot disturb a link that has another audio master.
+- **Role.** Settings › Roles › AUDIO MASTER (`roles.audio_master`), overridden for one run by
+  `NEOMASTER_ML_ROLE` (the C++ neomaster's variable; `source_center` works) or `--role
+  audio-master|link-source`. The default is off (link source): it never arbitrates for the bus,
+  so a wrong default cannot disturb a link that has another audio master. Changing it on the
+  panel rebuilds the link glue and restarts the PC2 in the new mode (`Pc2Cmd::Restart`) without
+  reopening the device.
 
 | Intent | Audio master | Link source |
 |---|---|---|
@@ -194,3 +200,56 @@ capture and the 2026 live source center captures, including the panel's own key 
 their captured moments. The actor test runs the async plumbing against the simulated PC2
 (start-up, pacing, reassembly, unplug, reopen, shutdown). `--sim` uses the simulated PC2 too, so
 the whole loop runs on a desktop; `--sim --usb` drives a real PC2 instead.
+
+## Settings
+
+Everything that used to be an environment variable or a constant is in one file, by default
+`/etc/neomaster/settings.toml` when running as root (the BM5) and
+`~/.config/neomaster/settings.toml` otherwise; `--config FILE` or `$NEOMASTER_CONFIG` pick another.
+
+- **Format.** TOML with a `version` key (now 1). Every key has the stock default, so a missing
+  file or a file with a few lines is valid. Out-of-range values are pulled back into range and
+  logged. A file that does not parse is moved to `settings.toml.bad` and the defaults are used.
+  A file from a newer neomaster is read but never overwritten.
+- **Saving.** Choices made in the SETTINGS menu are saved on a background thread: write
+  `settings.toml.tmp`, fsync, rename over the old file, fsync the directory.
+- **Environment.** `NEOMASTER_ML_ROLE`, `NEOMASTER_AUX_CARD`, `NEOMASTER_AUX_PLAYBACK`,
+  `NEOMASTER_AUX_LATENCY_US`, `MA_URL` and `NEOMASTER_MA_PLAYER` still work and win over the file
+  for that run, but are never saved into it (unless the same setting is then changed on the
+  panel). `MA_TOKEN`, or `music_assistant.token_file`, gives the Music Assistant token; the token
+  itself never goes in the settings file.
+
+| Section | Keys | Applied |
+|---|---|---|
+| `[roles]` | `audio_master`, `am_option` (0, 1, 2, 5, 6), `delay`, `names` / `saved` (the four slot names), `primary` | live: the link glue and the PC2 restart |
+| `[system]` | `language`, `time_zone`, `ir_timeout` (2-10), `power_saving`, `debug_logging` | `debug_logging` live (when `RUST_LOG` is unset); the others are stored and shown |
+| `[idle]` | `return_after_s` (180), `standby_tick_s` (1800), `active_playback_timeout_h` (12) | live, into `ui::idle::IdleConfig` |
+| `[service]` | `n_radio_buffer` (2-6), `disable_mots` | stored and shown (no N.RADIO player yet) |
+| `[network]` | `host_name`, `location` | shown; the host is not changed |
+| `[music_assistant]` | `url`, `player_id`, `token_file` | the N.RADIO actor, at start |
+| `[aux]` | `card`, `playback`, `latency_us` | live: card choice at the next poll, the loop settings at the next start |
+| `[link]` | `room_master`, `start_volume`, `bass`, `treble`, `loudness` | live, as for roles |
+
+**Source names.** The Roles rules are MLConfig.dll's (rules doc "BM5 source names and Roles:
+rules for neomaster"; `settings::names`, `settings::roles`). A slot's name gives its ML source
+and Beo4 key (A.MEM 0x79/0x91, CD 0x8d/0x92, N.MUSIC 0x7a/0x94, RADIO 0x6f/0x81, N.RADIO
+0xa1/0x93), so only names are stored and `Roles::source_map` derives the `SourceMap`. Switching
+AUDIO MASTER off saves the names and forces the link defaults (SystemConfiguration 7); switching
+it on restores them (SystemConfiguration from the AM option). The three music slots stay a
+permutation. The MODE list follows the names (for example A.MEM instead of N.MUSIC).
+
+**The menu.** GO on SETTINGS in the MODE list opens 7 sections; RIGHT LEFT RIGHT LEFT, then GO on
+SETTINGS, opens the hidden menu with 9 (as on the stock BM5). `settings::menu` builds the
+sections from the settings and the machine facts (uptime, storage, addresses, versions, CD drive);
+`ui::settings_zones` puts them on the arc (the hidden menu's zone boundaries fitted to the
+captured pointer positions) and `ui::settings_menu` draws each section on the list curve and
+handles the grammar: the pointer picks a
+section, the wheel moves, LEFT opens a choice's picker or a submenu, GO (or LEFT) keeps a choice,
+RIGHT leaves a picker or submenu. Conditional items follow the rules: PLAY TIMER or DELAY by AM
+option, the naming items only as audio master, CD naming only with the B&O CD drive. Stock items
+neomaster does not do (software update, recovery, Spotify accounts, client password) are listed
+and show NOT AVAILABLE.
+
+Open points: the stock commit gesture in a picker was not captured (GO keeps, RIGHT cancels here);
+DELAY's unit and range are not decoded, so it is shown but not offered; no speaker-type item
+exists in the 7.04 software's menus.

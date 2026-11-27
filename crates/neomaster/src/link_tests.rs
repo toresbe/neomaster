@@ -76,6 +76,7 @@ impl Harness {
             match cmd {
                 Pc2Cmd::Message(m) => self.pc2.send(m, self.now),
                 Pc2Cmd::Telegram(t) => self.pc2.send_telegram(&t, self.now).expect("the PC2 would accept it"),
+                Pc2Cmd::Restart(_) => unreachable!("the link glue never restarts the PC2"),
             }
         }
         self.app.extend(out.app);
