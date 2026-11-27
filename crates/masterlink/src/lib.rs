@@ -12,11 +12,13 @@ pub mod audio_master;
 pub mod host;
 pub mod protocol;
 pub mod source_center;
+pub mod sources;
 pub mod telegram;
 
 pub use audio_master::{AudioMaster, BusState, LockMode};
 pub use host::{Effect, Effects, Host};
 pub use source_center::SourceCenter;
+pub use sources::{LinkRole, LocalSource, SourceMap};
 pub use telegram::Telegram;
 
 /// A monotonic timestamp, as a duration since an arbitrary fixed epoch.

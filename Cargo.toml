@@ -19,6 +19,7 @@ render = { path = "crates/render", default-features = false }
 ui = { path = "crates/ui" }
 ma-client = { path = "crates/ma-client" }
 library = { path = "crates/library" }
+a-aux = { path = "crates/a-aux" }
 log = "0.4"
 
 [profile.release]

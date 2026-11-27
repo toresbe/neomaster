@@ -6,6 +6,7 @@
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
+use a_aux::AuxSource;
 use bs5_panel::{Decoder, Output, Report};
 use log::{debug, info};
 use render::Scene;
@@ -24,6 +25,8 @@ pub enum Event {
     Standby,
     /// The screen needs redrawing (window exposed).
     Redraw,
+    /// The A.AUX card poll (every [`AUX_POLL`]): the USB sound card, or `None` if absent.
+    AuxCard(Option<a_aux::Card>),
     Quit,
 }
 
@@ -32,18 +35,69 @@ pub trait PanelOut: Send {
     fn write(&mut self, report: [u8; 2]);
 }
 
-pub struct Core<P: PanelOut> {
+/// How often the A.AUX card is looked for (BeoSound5.exe got device arrival from Windows).
+pub const AUX_POLL: Duration = Duration::from_secs(2);
+
+/// Where A.AUX effects go: the loop that plays the USB card through the BM5.
+pub trait AuxOut: Send {
+    fn apply(&mut self, effect: &a_aux::Effect);
+    /// The loop exited by itself since the last call.
+    fn ended(&mut self) -> bool;
+}
+
+impl AuxOut for a_aux::loopback::Loopback {
+    fn apply(&mut self, effect: &a_aux::Effect) {
+        a_aux::loopback::Loopback::apply(self, effect)
+    }
+    fn ended(&mut self) -> bool {
+        a_aux::loopback::Loopback::ended(self)
+    }
+}
+
+pub struct Core<P: PanelOut, A: AuxOut> {
     ui: Ui,
     decoder: Decoder,
     panel: Output,
     panel_out: P,
+    aux: AuxSource,
+    aux_out: A,
     scenes: std_mpsc::SyncSender<Scene>,
     epoch: Instant,
 }
 
-impl<P: PanelOut> Core<P> {
-    pub fn new(ui: Ui, panel_out: P, scenes: std_mpsc::SyncSender<Scene>) -> Self {
-        Core { ui, decoder: Decoder::new(), panel: Output::new(), panel_out, scenes, epoch: Instant::now() }
+impl<P: PanelOut, A: AuxOut> Core<P, A> {
+    pub fn new(ui: Ui, panel_out: P, aux_out: A, scenes: std_mpsc::SyncSender<Scene>) -> Self {
+        Core {
+            ui,
+            decoder: Decoder::new(),
+            panel: Output::new(),
+            panel_out,
+            aux: AuxSource::new(),
+            aux_out,
+            scenes,
+            epoch: Instant::now(),
+        }
+    }
+
+    fn aux_effects(&mut self, fx: Vec<a_aux::Effect>) {
+        for e in &fx {
+            self.aux_out.apply(e);
+        }
+    }
+
+    fn aux_card(&mut self, card: Option<a_aux::Card>) {
+        if card.as_ref() != self.aux.card() {
+            match &card {
+                Some(c) => info!("A.AUX: USB sound card found: {c}"),
+                None if self.aux.card().is_some() => info!("A.AUX: USB sound card gone"),
+                None => {}
+            }
+        }
+        let mut fx = self.aux.set_card(card);
+        if fx.is_empty() && self.aux_out.ended() {
+            fx = self.aux.loop_ended();
+        }
+        self.aux_effects(fx);
     }
 
     fn now(&self) -> Time {
@@ -67,8 +121,20 @@ impl<P: PanelOut> Core<P> {
                 Effect::Volume(v) => debug!("volume {v}"),
                 Effect::Play(t) => info!("play {} track(s) (fake library; Music Assistant arrives in M3)", t.len()),
                 Effect::Enqueue(t) => info!("enqueue {} track(s)", t.len()),
-                Effect::SelectSource(s) => info!("select source {s}"),
-                Effect::Standby => info!("standby"),
+                Effect::SelectSource(s) => {
+                    info!("select source {s}");
+                    // Only A.AUX plays anything yet; picking another source stops it.
+                    let fx = if s == "A.AUX" { self.aux.select() } else { self.aux.deselect() };
+                    if s == "A.AUX" && self.aux.card().is_none() {
+                        info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
+                    }
+                    self.aux_effects(fx);
+                }
+                Effect::Standby => {
+                    info!("standby");
+                    let fx = self.aux.deselect();
+                    self.aux_effects(fx);
+                }
             }
         }
     }
@@ -117,6 +183,7 @@ impl<P: PanelOut> Core<P> {
                                 self.effects(fx, now);
                             }
                             Event::Redraw => {}
+                            Event::AuxCard(card) => self.aux_card(card),
                             Event::Quit => return,
                         }
                     }
@@ -132,6 +199,18 @@ impl<P: PanelOut> Core<P> {
                 }
             }
             self.draw(self.now());
+        }
+    }
+}
+
+/// Look for the A.AUX card every [`AUX_POLL`] and tell the core. Ends when the core is gone.
+pub async fn poll_aux_card(events: mpsc::UnboundedSender<Event>) {
+    let mut interval = tokio::time::interval(AUX_POLL);
+    loop {
+        interval.tick().await;
+        let card = tokio::task::spawn_blocking(a_aux::device::scan).await.unwrap_or(None);
+        if events.send(Event::AuxCard(card)).is_err() {
+            return;
         }
     }
 }
