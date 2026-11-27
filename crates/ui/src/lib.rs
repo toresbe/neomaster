@@ -4,16 +4,21 @@
 //!
 //! [`Ui`] is plain state. [`Ui::input`] and [`Ui::tick`] change it and return [`Effect`]s for the
 //! core to carry out (click the panel, play something, set the volume); [`Ui::scene`] turns it
-//! into a [`render::Scene`]. Nothing here blocks or touches a device.
+//! into a [`render::Scene`] (the layout is in `draw.rs`). Nothing here blocks or touches a device.
 
+pub mod assets;
+mod draw;
 pub mod fake;
 pub mod idle;
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bs5_panel::{Button, Input, COUNTS_PER_STEP};
-use render::{Align, Color, Rect, Scene, SCREEN_HEIGHT, SCREEN_WIDTH};
+use render::{Color, Image, Scene};
 
+pub use assets::Assets;
 use fake::Library;
 pub use idle::IdleConfig;
 use idle::{Idle, IdleAction};
@@ -49,6 +54,8 @@ pub enum ViewKind {
     List,
     Covers,
     Menu,
+    /// A two-column key/value page (SYSTEM INFO, NETWORK INFO).
+    Info,
 }
 
 /// A pointer zone: positions `lo..=hi` show `view`. The boundaries are guesses between the
@@ -72,6 +79,9 @@ enum Root {
     Artists,
     Covers,
     Mode,
+    Settings(&'static [&'static str]),
+    SystemInfo,
+    NetworkInfo,
 }
 
 /// N.MUSIC as captured: now-playing at both ends, the lists in between.
@@ -91,6 +101,32 @@ pub fn n_music_zones() -> Vec<Zone> {
     ]
 }
 
+/// SETTINGS, as captured (the normal menu, not the hidden one). The zone boundaries are not
+/// measured: they are the midpoints between the labels' places on the arc, mapped back to pointer
+/// positions with the slope measured in N.MUSIC (0.83 degrees per step).
+pub fn settings_zones() -> Vec<Zone> {
+    use ViewKind::*;
+    let z = |name, lo, hi, kind, root| Zone { name, lo, hi, kind, root };
+    vec![
+        z("NOW PLAYING", 0, 15, NowPlaying, Root::None),
+        z("ROLES", 16, 38, Menu, Root::Settings(&["AUDIO MASTER", "AM OPTION"])),
+        z("NETWORK INFO", 39, 46, Info, Root::NetworkInfo),
+        z("SERVICE SETTINGS", 47, 53, Menu, Root::Settings(&["N.RADIO BUFFER", "DISABLE MOTS"])),
+        z("MUSIC SERVICES", 54, 62, Menu, Root::Settings(&["SPOTIFY"])),
+        z(
+            "MAINTENANCE",
+            63,
+            71,
+            Menu,
+            Root::Settings(&["UPDATE SOFTWARE", "AUTOMATIC SOFTWARE UPDATE", "LATEST RELEASE INFORMATION", "ABOUT"]),
+        ),
+        z("SYSTEM SETTINGS", 72, 79, Menu, Root::Settings(&["LANGUAGE", "TIME ZONE", "TIME"])),
+        z("SYSTEM INFO", 80, 87, Info, Root::SystemInfo),
+        z("MODE", 88, 99, Menu, Root::Mode),
+        z("NOW PLAYING", 100, 127, NowPlaying, Root::None),
+    ]
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Item {
     Artist(usize),
@@ -101,28 +137,55 @@ enum Item {
 }
 
 struct Level {
-    title: String,
     items: Vec<Item>,
     cursor: usize,
     /// Where the list is drawn, easing towards `cursor`.
     scroll: f32,
+    /// Sorted by name, so the wheel shows the first letter while it turns.
+    alphabetical: bool,
 }
 
 impl Level {
-    fn new(title: impl Into<String>, items: Vec<Item>) -> Level {
-        Level { title: title.into(), items, cursor: 0, scroll: 0.0 }
+    fn new(items: Vec<Item>) -> Level {
+        Level { items, cursor: 0, scroll: 0.0, alphabetical: false }
     }
 }
 
-const CONTEXT_ENTRIES: [&str; 5] = ["RED", "GREEN", "YELLOW", "BLUE", "ADD TO QUEUE"];
+/// The long-GO menu: four colour favourites, ADD TO QUEUE (where it opens), then playlists.
+const CONTEXT_ENTRIES: [&str; 10] = ["RED", "GREEN", "YELLOW", "BLUE", "ADD TO  QUEUE", "01", "02", "03", "04", "05"];
+const CONTEXT_DEFAULT: usize = 4;
 const SOURCES: [&str; 4] = ["N.MUSIC", "N.RADIO", "A.AUX", "SETTINGS"];
+
+/// A change of view: the old content fades out, the screen stays black, the new content fades
+/// in (measured on the stock UI at 60 fps: about 100 ms, 230 ms and 100 ms).
+#[derive(Clone, Copy, Debug)]
+struct Switch {
+    /// The zone whose content fades out (None after the zone set changed).
+    from: Option<usize>,
+    start: Time,
+}
+
+pub const FADE_OUT: Duration = Duration::from_millis(100);
+pub const FADE_BLACK: Duration = Duration::from_millis(230);
+pub const FADE_IN: Duration = Duration::from_millis(100);
+/// How long the volume arc stays after the last change, then how long it takes to fade.
+const VOLUME_HOLD: Duration = Duration::from_millis(1500);
+const VOLUME_FADE: Duration = Duration::from_millis(300);
+/// How long the wheel's letter stays after the last step.
+const LETTER_HOLD: Duration = Duration::from_millis(1000);
 
 pub struct Ui {
     lib: Library,
+    assets: Assets,
+    font: render::Font,
+    /// Generated art for the fake library's albums.
+    art: HashMap<usize, Arc<Image>>,
     zones: Vec<Zone>,
     /// One navigation stack per zone, so leaving a zone and coming back returns to the same place.
     stacks: Vec<Vec<Level>>,
     pointer: u8,
+    /// The pointer as drawn, easing towards `pointer`.
+    pointer_drawn: f32,
     menu_counts: i32,
     queue: Vec<usize>,
     playing: Option<usize>,
@@ -130,8 +193,11 @@ pub struct Ui {
     volume_shown_until: Time,
     /// Long GO: the context menu, open while GO is held.
     context: Option<usize>,
+    context_scroll: f32,
     go_long: bool,
+    last_step: Time,
     last_frame: Option<Time>,
+    switch: Option<Switch>,
     /// The return timer fired (or a first standby press): the view shows now-playing until the
     /// pointer moves.
     idle_now_playing: bool,
@@ -140,56 +206,80 @@ pub struct Ui {
 }
 
 pub const MAX_VOLUME: u8 = 90;
-const ROW: f32 = 54.0;
-const CENTRE_Y: f32 = SCREEN_HEIGHT as f32 / 2.0;
-const TEXT: Color = Color::rgb(235, 235, 235);
-const DIM: Color = Color::rgb(150, 150, 150);
-const ACCENT: Color = Color::rgb(70, 140, 230);
 
 impl Ui {
+    /// The UI with the drawn assets and the bundled face; see [`Ui::with_assets`].
     pub fn new(lib: Library) -> Ui {
+        Ui::with_assets(lib, Assets::builtin())
+    }
+
+    pub fn with_assets(lib: Library, assets: Assets) -> Ui {
         let zones = n_music_zones();
         let mut ui = Ui {
             lib,
+            font: assets.font(),
+            assets,
+            art: HashMap::new(),
             stacks: Vec::new(),
             zones,
             pointer: 64,
+            pointer_drawn: 64.0,
             menu_counts: 0,
             queue: Vec::new(),
             playing: None,
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
             context: None,
+            context_scroll: CONTEXT_DEFAULT as f32,
             go_long: false,
+            last_step: Time::ZERO,
             last_frame: None,
+            switch: None,
             idle_now_playing: false,
             idle: Idle::new(IdleConfig::default(), Time::ZERO),
         };
-        ui.stacks = (0..ui.zones.len()).map(|i| vec![ui.root_level(ui.zones[i].root)]).collect();
+        ui.reset_stacks();
         ui
+    }
+
+    pub fn assets(&self) -> &Assets {
+        &self.assets
+    }
+
+    fn reset_stacks(&mut self) {
+        self.stacks = (0..self.zones.len()).map(|i| vec![self.root_level(self.zones[i].root)]).collect();
     }
 
     fn root_level(&self, root: Root) -> Level {
         let lib = &self.lib;
+        let sorted = |mut l: Level| {
+            l.alphabetical = true;
+            l
+        };
         match root {
-            Root::None => Level::new("", vec![]),
-            Root::Queue => Level::new("QUEUE", self.queue.iter().map(|t| Item::Track(*t)).collect()),
-            Root::Favourites => Level::new(
-                "FAVOURITES",
-                ["RED", "GREEN", "YELLOW", "BLUE", "RECENTLY ADDED"].into_iter().map(Item::Label).collect(),
-            ),
+            Root::None | Root::SystemInfo | Root::NetworkInfo => Level::new(vec![]),
+            Root::Queue => Level::new(self.queue.iter().map(|t| Item::Track(*t)).collect()),
+            Root::Favourites => {
+                Level::new(["RED", "GREEN", "YELLOW", "BLUE", "RECENTLY ADDED"].into_iter().map(Item::Label).collect())
+            }
             Root::Titles => {
                 let mut t: Vec<usize> = (0..lib.tracks.len()).collect();
                 t.sort_by_cached_key(|i| lib.tracks[*i].title.to_lowercase());
-                Level::new("TITLES", t.into_iter().map(Item::Track).collect())
+                sorted(Level::new(t.into_iter().map(Item::Track).collect()))
             }
             Root::Albums | Root::Covers => {
                 let mut a: Vec<usize> = (0..lib.albums.len()).collect();
                 a.sort_by_cached_key(|i| lib.albums[*i].title.to_lowercase());
-                Level::new(if root == Root::Albums { "ALBUMS" } else { "COVERS" }, a.into_iter().map(Item::Album).collect())
+                let l = Level::new(a.into_iter().map(Item::Album).collect());
+                if root == Root::Albums {
+                    sorted(l)
+                } else {
+                    l
+                }
             }
-            Root::Artists => Level::new("ARTISTS", (0..lib.artists.len()).map(Item::Artist).collect()),
-            Root::Mode => Level::new("MODE", SOURCES.into_iter().map(Item::Source).collect()),
+            Root::Artists => sorted(Level::new((0..lib.artists.len()).map(Item::Artist).collect())),
+            Root::Mode => Level::new(SOURCES.into_iter().map(Item::Source).collect()),
+            Root::Settings(items) => Level::new(items.iter().copied().map(Item::Label).collect()),
         }
     }
 
@@ -206,15 +296,18 @@ impl Ui {
 
     fn level_mut(&mut self) -> Option<&mut Level> {
         let z = self.zone_index();
-        if self.zones[z].kind == ViewKind::NowPlaying {
+        if matches!(self.zones[z].kind, ViewKind::NowPlaying | ViewKind::Info) {
             return None;
         }
         self.stacks[z].last_mut()
     }
 
     fn level(&self) -> Option<&Level> {
-        let z = self.zone_index();
-        if self.zones[z].kind == ViewKind::NowPlaying {
+        self.level_of(self.zone_index())
+    }
+
+    fn level_of(&self, z: usize) -> Option<&Level> {
+        if matches!(self.zones[z].kind, ViewKind::NowPlaying | ViewKind::Info) {
             return None;
         }
         self.stacks[z].last()
@@ -238,17 +331,16 @@ impl Ui {
         }
     }
 
+    fn in_settings(&self) -> bool {
+        self.zones.iter().any(|z| matches!(z.root, Root::Settings(_)))
+    }
+
     fn drill(&self, item: Item) -> Option<Level> {
         match item {
-            Item::Artist(a) => Some(Level::new(
-                self.lib.artists[a].name.clone(),
-                self.lib.artists[a].albums.iter().map(|x| Item::Album(*x)).collect(),
-            )),
-            Item::Album(a) => Some(Level::new(
-                self.lib.albums[a].title.clone(),
-                self.lib.albums[a].tracks.iter().map(|x| Item::Track(*x)).collect(),
-            )),
-            Item::Label(l) => Some(Level::new(l, vec![])),
+            Item::Artist(a) => Some(Level::new(self.lib.artists[a].albums.iter().map(|x| Item::Album(*x)).collect())),
+            Item::Album(a) => Some(Level::new(self.lib.albums[a].tracks.iter().map(|x| Item::Track(*x)).collect())),
+            // settings pages are not built yet
+            Item::Label(_) if !self.in_settings() => Some(Level::new(vec![])),
             _ => None,
         }
     }
@@ -266,9 +358,23 @@ impl Ui {
         }
     }
 
+    /// Start (or redirect) the fade between views whenever the zone shown changes.
+    fn note_view_change(&mut self, before: usize, now: Time) {
+        if self.zone_index() == before {
+            return;
+        }
+        match self.switch {
+            // Still fading out or black: the new target simply replaces the old one.
+            Some(sw) if now.saturating_sub(sw.start) < FADE_OUT + FADE_BLACK => {}
+            // Fading in (or done): fade the shown view out again.
+            _ => self.switch = Some(Switch { from: Some(before), start: now }),
+        }
+    }
+
     /// Feed one panel input.
     pub fn input(&mut self, input: Input, now: Time) -> Vec<Effect> {
         let mut fx = Vec::new();
+        let before = self.zone_index();
         let source_active = self.playing.is_some() || self.idle.playing();
         if self.idle.input(now, source_active) {
             // Any input while blanked turns the backlight on and is otherwise swallowed, so the
@@ -276,12 +382,12 @@ impl Ui {
             fx.push(Effect::Backlight(true));
             if let Input::Pointer(p) = input {
                 self.pointer = p;
+                self.pointer_drawn = p as f32;
             }
             return fx;
         }
         match input {
             Input::Pointer(p) => {
-                let before = self.zone_index();
                 self.idle_now_playing = false;
                 self.pointer = p;
                 if self.zone_index() != before {
@@ -294,11 +400,12 @@ impl Ui {
                 self.menu_counts -= steps * COUNTS_PER_STEP;
                 if steps != 0 {
                     fx.extend(self.step(steps));
+                    self.last_step = now;
                 }
             }
             Input::VolumeWheel(counts) => {
                 let v = (self.volume as i32 + counts).clamp(0, MAX_VOLUME as i32) as u8;
-                self.volume_shown_until = now + Duration::from_millis(1500);
+                self.volume_shown_until = now + VOLUME_HOLD;
                 if v != self.volume {
                     self.volume = v;
                     fx.push(Effect::Volume(v));
@@ -308,13 +415,14 @@ impl Ui {
             Input::LongPress(Button::Go) => {
                 if matches!(self.current_item(), Some(Item::Track(_) | Item::Album(_) | Item::Artist(_))) {
                     self.go_long = true;
-                    self.context = Some(0);
+                    self.context = Some(CONTEXT_DEFAULT);
+                    self.context_scroll = CONTEXT_DEFAULT as f32;
                     fx.push(Effect::Click);
                 }
             }
             Input::Released(Button::Go) => {
                 if let Some(entry) = self.context.take() {
-                    if CONTEXT_ENTRIES[entry] == "ADD TO QUEUE" {
+                    if entry == CONTEXT_DEFAULT {
                         if let Some(item) = self.current_item() {
                             let t = self.tracks_of(item);
                             self.queue.extend(&t);
@@ -323,7 +431,7 @@ impl Ui {
                         }
                     }
                 } else if !self.go_long {
-                    fx.extend(self.go());
+                    fx.extend(self.go(now));
                 }
             }
             Input::Pressed(Button::Left) => {
@@ -344,6 +452,7 @@ impl Ui {
             }
             _ => {}
         }
+        self.note_view_change(before, now);
         fx
     }
 
@@ -358,7 +467,9 @@ impl Ui {
         self.idle.input(now, source_active);
         self.context = None;
         if self.zone().kind != ViewKind::NowPlaying {
+            let before = self.zone_index();
             self.idle_now_playing = true;
+            self.note_view_change(before, now);
             return vec![];
         }
         vec![Effect::Standby]
@@ -391,7 +502,11 @@ impl Ui {
 
     fn step(&mut self, steps: i32) -> Vec<Effect> {
         if let Some(c) = self.context.as_mut() {
-            *c = (*c as i32 + steps).clamp(0, CONTEXT_ENTRIES.len() as i32 - 1) as usize;
+            let new = (*c as i32 + steps).clamp(0, CONTEXT_ENTRIES.len() as i32 - 1) as usize;
+            if new == *c {
+                return vec![];
+            }
+            *c = new;
             return vec![Effect::Click];
         }
         let Some(level) = self.level_mut() else { return vec![] };
@@ -406,9 +521,25 @@ impl Ui {
         vec![Effect::Click]
     }
 
-    fn go(&mut self) -> Vec<Effect> {
+    fn go(&mut self, now: Time) -> Vec<Effect> {
         match self.current_item() {
-            Some(Item::Source(s)) => vec![Effect::SelectSource(s)],
+            Some(Item::Source(s)) => {
+                // SETTINGS swaps the arc's zones for the settings pages; any real source swaps
+                // them back.
+                let settings = s == "SETTINGS";
+                if settings != self.in_settings() {
+                    self.zones = if settings { settings_zones() } else { n_music_zones() };
+                    self.reset_stacks();
+                    // MODE keeps its cursor where it was
+                    if let Some(z) = self.zones.iter().position(|z| z.root == Root::Mode) {
+                        let i = SOURCES.iter().position(|x| *x == s).unwrap_or(0);
+                        self.stacks[z][0].cursor = i;
+                        self.stacks[z][0].scroll = i as f32;
+                    }
+                    self.switch = Some(Switch { from: None, start: now });
+                }
+                vec![Effect::SelectSource(s)]
+            }
             Some(item @ (Item::Track(_) | Item::Album(_) | Item::Artist(_))) => {
                 let t = self.tracks_of(item);
                 self.playing = t.first().copied();
@@ -427,7 +558,9 @@ impl Ui {
             match a {
                 IdleAction::ReturnToNowPlaying => {
                     if self.context.is_none() {
+                        let before = self.zone_index();
                         self.idle_now_playing = true;
+                        self.note_view_change(before, now);
                     }
                 }
                 IdleAction::Blank => {
@@ -446,14 +579,30 @@ impl Ui {
     }
 
     /// When the next frame is due: in one frame while something moves, at the end of the volume
-    /// overlay, or never.
+    /// overlay or the wheel letter, or never.
     pub fn next_frame(&self, now: Time) -> Option<Time> {
-        if let Some(l) = self.level() {
-            if (l.scroll - l.cursor as f32).abs() > 0.002 {
-                return Some(now + Duration::from_micros(16_667));
-            }
+        if self.idle.blanked() {
+            return None;
         }
-        (self.volume_shown_until > now).then_some(self.volume_shown_until)
+        // One frame after the last one drawn, so a caller that checks "is it due yet" at the
+        // deadline finds it due.
+        let soon = Some(self.last_frame.unwrap_or(now) + Duration::from_micros(16_667));
+        // Judged by the last frame drawn, not by `now`: the frame that shows the end of a fade
+        // is still owed when the caller asks after the fade's end.
+        let drawn = self.last_frame.unwrap_or(Time::ZERO);
+        let moving = self.level().is_some_and(|l| (l.scroll - l.cursor as f32).abs() > 0.002)
+            || self.context.is_some_and(|c| (self.context_scroll - c as f32).abs() > 0.002)
+            || self.switch.is_some()
+            || (self.pointer_drawn - self.pointer as f32).abs() > 0.01;
+        if moving {
+            return soon;
+        }
+        let volume_end = self.volume_shown_until + VOLUME_FADE;
+        if self.volume_shown_until > Time::ZERO && drawn < volume_end {
+            return if now < self.volume_shown_until { Some(self.volume_shown_until) } else { soon };
+        }
+        let letter_end = self.last_step + LETTER_HOLD;
+        (drawn < letter_end && self.level().is_some_and(|l| l.alphabetical)).then_some(letter_end)
     }
 
     /// The next timer [`Ui::tick`] needs, if any.
@@ -479,18 +628,35 @@ impl Ui {
         }
         self.context = None;
         self.idle_now_playing = true;
+        self.switch = None;
         Self::blank_effects().to_vec()
     }
 
     fn animate(&mut self, now: Time) {
         let dt = self.last_frame.map(|t| now.saturating_sub(t).as_secs_f32()).unwrap_or(1.0).min(0.25);
         self.last_frame = Some(now);
+        // One row per wheel tick, eased over a few frames.
         let k = 1.0 - (-dt / 0.045).exp();
-        if let Some(l) = self.level_mut() {
-            l.scroll += (l.cursor as f32 - l.scroll) * k;
-            if (l.scroll - l.cursor as f32).abs() <= 0.002 {
-                l.scroll = l.cursor as f32;
+        let ease = |pos: &mut f32, target: f32| {
+            *pos += (target - *pos) * k;
+            if (*pos - target).abs() <= 0.002 {
+                *pos = target;
             }
+        };
+        if let Some(l) = self.level_mut() {
+            let target = l.cursor as f32;
+            ease(&mut l.scroll, target);
+        }
+        if let Some(c) = self.context {
+            ease(&mut self.context_scroll, c as f32);
+        }
+        let kp = 1.0 - (-dt / 0.03).exp();
+        self.pointer_drawn += (self.pointer as f32 - self.pointer_drawn) * kp;
+        if (self.pointer_drawn - self.pointer as f32).abs() <= 0.01 {
+            self.pointer_drawn = self.pointer as f32;
+        }
+        if self.switch.is_some_and(|sw| now >= sw.start + FADE_OUT + FADE_BLACK + FADE_IN) {
+            self.switch = None;
         }
     }
 
@@ -501,144 +667,26 @@ impl Ui {
             return s;
         }
         self.animate(now);
-        match self.zone().kind {
-            ViewKind::NowPlaying => self.draw_now_playing(&mut s),
-            ViewKind::List | ViewKind::Menu => self.draw_list(&mut s),
-            ViewKind::Covers => self.draw_covers(&mut s),
-        }
-        self.draw_arc(&mut s);
-        if let Some(c) = self.context {
-            self.draw_context(&mut s, c);
-        }
-        if now < self.volume_shown_until {
-            self.draw_volume(&mut s);
-        }
+        self.paint(&mut s, now);
         s
     }
 
-    fn pointer_y(p: f32) -> f32 {
-        64.0 + p * (640.0 / 127.0)
-    }
-
-    fn arc_x(y: f32) -> f32 {
-        let (cx, cy, r) = (1400.0f32, CENTRE_Y, 520.0f32);
-        let dy = (y - cy).clamp(-r + 1.0, r - 1.0);
-        cx - (r * r - dy * dy).sqrt()
-    }
-
-    fn draw_arc(&self, s: &mut Scene) {
-        let current = self.zone_index();
-        for (i, z) in self.zones.iter().enumerate() {
-            if i == self.zones.len() - 1 {
-                continue; // the second now-playing zone shares the label
-            }
-            let centre = (z.lo as f32 + z.hi as f32) / 2.0;
-            let y = Self::pointer_y(centre);
-            let on = i == current || (current == self.zones.len() - 1 && i == 0);
-            s.text(
-                Self::arc_x(y) as i32 - 28,
-                y as i32 + 8,
-                if on { 24 } else { 20 },
-                if on { TEXT } else { DIM.with_opacity(0.7) },
-                Align::Right,
-                z.name,
-            );
-        }
-        let y = Self::pointer_y(self.pointer as f32);
-        let x = Self::arc_x(y);
-        s.fill(Rect::new(x as i32 - 14, y as i32 - 3, 22, 6), ACCENT);
-    }
-
-    fn draw_list(&self, s: &mut Scene) {
-        let Some(level) = self.level() else { return };
-        let z = self.zone_index();
-        let depth = self.stacks[z].len();
-        let crumb = if depth > 1 { format!("{}  ›  {}", self.zones[z].name, level.title) } else { level.title.clone() };
-        s.text(60, 70, 22, DIM, Align::Left, crumb);
-        if level.items.is_empty() {
-            s.text(400, CENTRE_Y as i32, 28, DIM, Align::Center, "Empty");
-            return;
-        }
-        let first = (level.scroll - 7.0).floor().max(0.0) as usize;
-        let last = ((level.scroll + 7.0).ceil() as usize).min(level.items.len() - 1);
-        for i in first..=last {
-            let d = i as f32 - level.scroll;
-            let y = CENTRE_Y + d * ROW;
-            let near = 1.0 - d.abs().min(1.0);
-            let size = (26.0 + 10.0 * near) as u16;
-            let alpha = (1.0 - d.abs() / 7.5).clamp(0.0, 1.0);
-            let item = level.items[i];
-            if let (Item::Track(t), Some(p)) = (item, self.playing) {
-                if t == p {
-                    s.fill(Rect::new(60, (y - 22.0) as i32, 6, 34), ACCENT.with_opacity(alpha));
-                }
-            }
-            let colour = if i == level.cursor { TEXT } else { DIM };
-            s.text(90, y as i32 + size as i32 / 3, size, colour.with_opacity(alpha), Align::Left, self.label(item));
-            if let Item::Track(t) = item {
-                if depth == 1 && i == level.cursor {
-                    let tr = &self.lib.tracks[t];
-                    s.text(90, y as i32 + 34, 18, DIM.with_opacity(alpha), Align::Left, self.lib.artists[tr.artist].name.clone());
-                }
-            }
-        }
-    }
-
-    fn draw_covers(&self, s: &mut Scene) {
-        let Some(level) = self.level() else { return };
-        let first = (level.scroll - 6.0).floor().max(0.0) as usize;
-        let last = ((level.scroll + 6.0).ceil() as usize).min(level.items.len().saturating_sub(1));
-        for i in first..=last {
-            let d = i as f32 - level.scroll;
-            let size = (96.0 - d.abs().min(5.0) * 8.0).max(56.0);
-            let y = CENTRE_Y + d * 104.0;
-            let x = 560.0 - d * d * 9.0;
-            let Item::Album(a) = level.items[i] else { continue };
-            let (r, g, b) = self.lib.albums[a].colour;
-            let alpha = (1.0 - d.abs() / 6.5).clamp(0.0, 1.0);
-            s.fill(
-                Rect::new((x - size / 2.0) as i32, (y - size / 2.0) as i32, size as u32, size as u32),
-                Color::rgb(r, g, b).with_opacity(alpha),
-            );
-        }
-        if let Some(Item::Album(a)) = level.items.get(level.cursor) {
-            let al = &self.lib.albums[*a];
-            s.text(60, CENTRE_Y as i32 - 6, 32, TEXT, Align::Left, al.title.clone());
-            s.text(60, CENTRE_Y as i32 + 30, 22, DIM, Align::Left, self.lib.artists[al.artist].name.clone());
-        }
-    }
-
-    fn draw_now_playing(&self, s: &mut Scene) {
-        let Some(t) = self.playing else {
-            s.text(420, CENTRE_Y as i32, 30, DIM, Align::Center, "Nothing playing");
-            return;
-        };
-        let tr = &self.lib.tracks[t];
-        let al = &self.lib.albums[tr.album];
-        let (r, g, b) = al.colour;
-        s.fill(Rect::new(90, 214, 340, 340), Color::rgb(r, g, b));
-        s.text(470, 350, 38, TEXT, Align::Left, tr.title.clone());
-        s.text(470, 398, 28, DIM, Align::Left, self.lib.artists[tr.artist].name.clone());
-        s.text(470, 438, 24, DIM.with_opacity(0.7), Align::Left, al.title.clone());
-    }
-
-    fn draw_context(&self, s: &mut Scene, cursor: usize) {
-        s.fill(Rect::new(0, 0, SCREEN_WIDTH as u32, SCREEN_HEIGHT as u32), Color::rgba(0, 0, 0, 170));
-        for (i, e) in CONTEXT_ENTRIES.iter().enumerate() {
-            let y = 250 + i as i32 * 60;
-            if i == cursor {
-                s.fill(Rect::new(300, y - 36, 420, 50), ACCENT.with_opacity(0.6));
-            }
-            s.text(512, y, 30, TEXT, Align::Center, *e);
-        }
-    }
-
-    fn draw_volume(&self, s: &mut Scene) {
-        let w = 400u32;
-        let x = (SCREEN_WIDTH as u32 - w) / 2;
-        s.fill(Rect::new(x as i32, 690, w, 8), Color::rgb(60, 60, 60));
-        s.fill(Rect::new(x as i32, 690, w * self.volume as u32 / MAX_VOLUME as u32, 8), ACCENT);
-        s.text(512, 676, 22, TEXT, Align::Center, format!("VOLUME {}", self.volume));
+    /// The fake library's art for `album`: a generated gradient sleeve, made once.
+    fn album_art(&mut self, album: usize) -> Arc<Image> {
+        let (r, g, b) = self.lib.albums[album].colour;
+        self.art
+            .entry(album)
+            .or_insert_with(|| {
+                let (r, g, b) = (r as f32, g as f32, b as f32);
+                Image::from_fn(256, 256, |x, y| {
+                    let shade = 1.25 - 0.6 * (x + y) / 512.0;
+                    let ring = ((x - 176.0).hypot(y - 88.0) - 60.0).abs() < 14.0;
+                    let k = if ring { shade * 1.25 } else { shade };
+                    let c = |v: f32| (v * k).round().clamp(0.0, 255.0) as u8;
+                    [c(r), c(g), c(b), 255]
+                })
+            })
+            .clone()
     }
 }
 
@@ -656,6 +704,10 @@ mod tests {
         ui
     }
 
+    fn texts(s: &Scene) -> usize {
+        s.items.iter().filter(|p| matches!(p, render::Primitive::Text { .. })).count()
+    }
+
     #[test]
     fn pointer_picks_the_view_and_clicks_on_zone_change() {
         let mut ui = ui_at(76);
@@ -671,7 +723,7 @@ mod tests {
     fn wheel_counts_become_steps_with_one_click_each() {
         let mut ui = ui_at(76);
         assert_eq!(ui.input(Input::MenuWheel(10), ms(1)), vec![]);
-        assert_eq!(ui.input(Input::MenuWheel(10), ms(2)), vec![Effect::Click]); // 20 counts = 1 step
+        assert_eq!(ui.input(Input::MenuWheel(10), ms(2)), vec![Effect::Click]); // 15 counts = 1 step
         assert_eq!(ui.level().unwrap().cursor, 1);
         ui.input(Input::MenuWheel(-45), ms(3)); // clamps at the top
         assert_eq!(ui.level().unwrap().cursor, 0);
@@ -699,13 +751,22 @@ mod tests {
         let fx = ui.input(Input::Released(Button::Go), ms(50));
         assert!(matches!(fx[..], [Effect::Play(_)]));
         ui.input(Input::Pressed(Button::Go), ms(100));
-        ui.input(Input::LongPress(Button::Go), ms(900));
-        ui.input(Input::MenuWheel(60), ms(950)); // to ADD TO QUEUE
+        ui.input(Input::LongPress(Button::Go), ms(900)); // opens on ADD TO QUEUE
         let fx = ui.input(Input::Released(Button::Go), ms(1000));
         assert!(matches!(fx[..], [Effect::Enqueue(_)]));
         ui.input(Input::Pointer(30), ms(1100));
         assert_eq!(ui.zone().name, "QUEUE");
         assert_eq!(ui.level().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn long_go_elsewhere_in_the_menu_does_not_enqueue() {
+        let mut ui = ui_at(62);
+        ui.input(Input::Pressed(Button::Go), ms(100));
+        ui.input(Input::LongPress(Button::Go), ms(900));
+        ui.input(Input::MenuWheel(-15), ms(950)); // to BLUE
+        let fx = ui.input(Input::Released(Button::Go), ms(1000));
+        assert!(fx.is_empty());
     }
 
     #[test]
@@ -785,5 +846,59 @@ mod tests {
             ui.scene(ms(17 * f));
         }
         assert_eq!(ui.next_frame(ms(1100)), None);
+    }
+
+    #[test]
+    fn a_view_change_fades_out_goes_black_and_fades_in() {
+        let mut ui = ui_at(76);
+        ui.scene(ms(0));
+        ui.scene(ms(600));
+        let before = texts(&ui.scene(ms(990)));
+        ui.input(Input::Pointer(70), ms(1000)); // ARTISTS -> ALBUMS
+        let black = texts(&ui.scene(ms(1200))); // only the arc's labels
+        assert!(black < before, "content is gone while black ({before} -> {black})");
+        let back = texts(&ui.scene(ms(1500)));
+        assert!(back > black, "content is back after the fade ({black} -> {back})");
+        assert!(ui.next_frame(ms(1500)).is_none());
+    }
+
+    #[test]
+    fn the_frame_ending_a_fade_is_still_owed_after_the_fade() {
+        let mut ui = ui_at(76);
+        ui.scene(ms(0));
+        ui.scene(ms(900));
+        ui.input(Input::Pointer(70), ms(1000));
+        ui.scene(ms(1425)); // the last frame inside the fade
+        let due = ui.next_frame(ms(1445)).expect("one more frame");
+        assert!(due <= ms(1445));
+        ui.scene(ms(1445));
+        assert_eq!(ui.next_frame(ms(1460)), None);
+    }
+
+    #[test]
+    fn go_on_settings_swaps_the_arc() {
+        let mut ui = ui_at(92); // MODE
+        ui.input(Input::MenuWheel(45), ms(1)); // to SETTINGS
+        ui.input(Input::Pressed(Button::Go), ms(2));
+        let fx = ui.input(Input::Released(Button::Go), ms(3));
+        assert_eq!(fx, vec![Effect::SelectSource("SETTINGS")]);
+        ui.input(Input::Pointer(75), ms(4));
+        assert_eq!(ui.zone().name, "SYSTEM SETTINGS");
+        ui.input(Input::Pointer(92), ms(5));
+        ui.input(Input::MenuWheel(-45), ms(6)); // back to N.MUSIC
+        ui.input(Input::Pressed(Button::Go), ms(7));
+        ui.input(Input::Released(Button::Go), ms(8));
+        ui.input(Input::Pointer(76), ms(9));
+        assert_eq!(ui.zone().name, "ARTISTS");
+    }
+
+    #[test]
+    fn every_view_draws() {
+        let mut ui = ui_at(64);
+        for (i, p) in [0u8, 30, 50, 62, 70, 76, 82, 92].into_iter().enumerate() {
+            let t = ms(10_000 * (i as u64 + 1));
+            ui.input(Input::Pointer(p), t);
+            assert!(!ui.scene(t + ms(1000)).items.is_empty(), "pointer {p}");
+        }
     }
 }

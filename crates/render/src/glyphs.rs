@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-/// The face shipped in the repository (fonts/FreeSansBold.ttf, GNU FreeFont), a stand-in until
-/// a face close to the stock one is picked.
+/// The face shipped in the repository (fonts/FreeSansBold.ttf, GNU FreeFont), used when the stock
+/// BeoFont is not available (see `ui::assets`).
 pub static DEFAULT_FONT: &[u8] = include_bytes!("../../../fonts/FreeSansBold.ttf");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,6 +25,7 @@ pub struct Glyph {
     pub coverage: Vec<u8>,
 }
 
+#[derive(Clone)]
 pub struct Font {
     font: fontdue::Font,
     advances: HashMap<GlyphKey, f32>,
@@ -55,6 +56,11 @@ impl Font {
     fn advance(&mut self, key: GlyphKey) -> f32 {
         let font = &self.font;
         *self.advances.entry(key).or_insert_with(|| font.metrics(key.ch, key.size as f32).advance_width)
+    }
+
+    /// Whether the face has a glyph for `ch` (fontdue draws a box for missing ones).
+    pub fn has_glyph(&self, ch: char) -> bool {
+        self.font.lookup_glyph_index(ch) != 0
     }
 
     /// Width of `text` in pixels at `size`.

@@ -48,6 +48,9 @@ impl PanelOut for NoPanel {
 
 pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = XRenderer::open_window("neomaster --sim", SCREEN_WIDTH, SCREEN_HEIGHT)?;
+    // The stock look, where $NEOMASTER_STOCK_ASSETS points at the BM5's disk (see ui::assets).
+    let assets = ui::Assets::from_env();
+    renderer.set_font(assets.font())?;
     let conn = renderer.connection();
     let window = renderer.window();
     let wm_delete = renderer.wm_delete_window;
@@ -91,7 +94,7 @@ pub fn run(role: LinkRole, device: Pc2Device, debug_cfg: &crate::debug::Config) 
         let _ = input_tx.send(Event::Quit);
     })?;
 
-    let ui = ui::Ui::new(ui::fake::Library::generate());
+    let ui = ui::Ui::with_assets(ui::fake::Library::generate(), assets);
     let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     crate::debug::server::start(&rt, debug_cfg, event_tx.clone(), crate::debug_hello("sim", role, device))?;
     let aux_tx = event_tx.clone();

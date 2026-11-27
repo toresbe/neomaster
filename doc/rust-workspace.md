@@ -11,8 +11,8 @@ what exists and how to build it.
 | `crates/masterlink` | Telegram codec, protocol constants, `AudioMaster` and `SourceCenter`, sans-IO | Ported from libpc2, capture replays pass |
 | `crates/pc2` | PC2 framing, fragment assembler, wake-up packets, telegram pacer, mixer, fan loop, start-up and dispatch, sans-IO | Ported from libpc2; driven over USB by the binary's PC2 actor |
 | `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; USB adapter not written yet (M4) |
-| `crates/render` | Scene types, glyph rasterising (fontdue), XRender backend (x11rb) | Fills and text; covers come with M2 |
-| `crates/ui` | Pointer zones, views, navigation, animation; state in, scene out | List, cover arc (placeholder tiles), now-playing, context menu, volume, idle and blanking, on fake data |
+| `crates/render` | Scene types, glyph rasterising (fontdue), images (PNG), XRender backend (x11rb) | Fills, text and images (scaled, cropped, tinted, additive, rotated) |
+| `crates/ui` | Pointer zones, views, navigation, animation, layout and assets; state in, scene out | Stock layout measured from the 27 Nov screenshots: menu arc with beam, list and cover curves, now-playing, long-GO menu, volume arc, SETTINGS arc, view-switch fades, idle and blanking, on fake data. Uses the BM5's own font and textures from `$NEOMASTER_STOCK_ASSETS`, drawn look-alikes otherwise |
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
 | `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |

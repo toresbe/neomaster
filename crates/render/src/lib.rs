@@ -1,16 +1,22 @@
 //! What the UI draws and how it gets to the screen.
 //!
-//! Every frame is a back-to-front list of a few primitive kinds ([`Primitive`]); nothing rotates,
-//! skews or scales at draw time. Backends implement [`Renderer`]. The XRender backend
+//! Every frame is a back-to-front list of a few primitive kinds ([`Primitive`]): fills, text and
+//! images. Images may be scaled, cropped, tinted, faded and (for the pointer beam only) rotated;
+//! the stock UI blends its arc, flare and volume textures additively, so [`Blend::Add`] exists
+//! too. Backends implement [`Renderer`]. The XRender backend
 //! ([`xrender::XRenderer`]) runs unchanged on the BM5's bare Xorg (openchrome) and in a window on
 //! any X desktop, which is what `neomaster --sim` uses. A framebuffer blitter is the fallback if
 //! openchrome's acceleration disappoints (milestone M0 decides).
 
 pub mod glyphs;
+pub mod image;
 #[cfg(feature = "xrender")]
 pub mod xrender;
 
-pub use glyphs::{Font, GlyphKey};
+pub use glyphs::{Font, GlyphKey, DEFAULT_FONT};
+pub use image::Image;
+
+use std::sync::Arc;
 
 /// Premultiplication happens in the backend; colours here are straight ARGB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
@@ -58,12 +64,49 @@ pub enum Align {
     Right,
 }
 
+/// How an image lands on what is already drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Blend {
+    /// Ordinary alpha blending.
+    #[default]
+    Over,
+    /// `dst += src * alpha`: Direct3D's SrcAlpha/One, which the stock shaders use for the arc,
+    /// the pointer flare and the volume arc.
+    Add,
+}
+
+/// An image placed on screen. `src` (in image pixels) is scaled to `dst`; with `angle` set the
+/// result turns by that many radians about the centre of `dst`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageDraw {
+    pub image: Arc<Image>,
+    pub src: Rect,
+    pub dst: Rect,
+    pub opacity: f32,
+    pub blend: Blend,
+    /// Draw this colour through the image's alpha instead of the image's own colours (for white
+    /// glow textures that the stock UI tints).
+    pub tint: Option<Color>,
+    pub angle: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Primitive {
     /// Solid or translucent rectangle (highlight bar, placeholder tile, dimming).
-    Fill { rect: Rect, color: Color },
+    Fill {
+        rect: Rect,
+        color: Color,
+    },
     /// A run of text from the glyph atlas. `x`/`y` is the anchor on the baseline.
-    Text { x: i32, y: i32, size: u16, color: Color, align: Align, text: String },
+    Text {
+        x: i32,
+        y: i32,
+        size: u16,
+        color: Color,
+        align: Align,
+        text: String,
+    },
+    Image(ImageDraw),
 }
 
 /// One frame.
@@ -82,6 +125,23 @@ impl Scene {
     }
     pub fn text(&mut self, x: i32, y: i32, size: u16, color: Color, align: Align, text: impl Into<String>) {
         self.items.push(Primitive::Text { x, y, size, color, align, text: text.into() });
+    }
+    /// The whole image scaled into `dst`, blended over.
+    pub fn image(&mut self, image: &Arc<Image>, dst: Rect, opacity: f32) {
+        self.draw(ImageDraw {
+            src: image.rect(),
+            image: image.clone(),
+            dst,
+            opacity,
+            blend: Blend::Over,
+            tint: None,
+            angle: 0.0,
+        });
+    }
+    pub fn draw(&mut self, d: ImageDraw) {
+        if d.opacity > 0.0 && d.dst.w > 0 && d.dst.h > 0 && d.src.w > 0 && d.src.h > 0 {
+            self.items.push(Primitive::Image(d));
+        }
     }
 }
 
