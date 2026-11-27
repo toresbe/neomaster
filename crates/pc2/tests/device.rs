@@ -67,7 +67,7 @@ fn refuses_what_the_firmware_would_drop() {
     let bad_type = [0xc0, 0xc1, 0x01, 0x87, 0, 0, 0, 0x04, 0x00, 0x04, 0x00, 0x00];
     assert!(p.send_telegram(&bad_type, ms(0)).is_err());
     let mut long = vec![0xc0, 0xc1, 0x01, 0x14, 0, 0, 0, 0x87, 41, 0x04];
-    long.extend(std::iter::repeat(0).take(43));
+    long.extend(std::iter::repeat_n(0, 43));
     assert!(p.send_telegram(&long, ms(0)).is_err());
     assert!(p.poll_transmit().is_none());
 }

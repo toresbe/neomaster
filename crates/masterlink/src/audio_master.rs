@@ -294,6 +294,15 @@ impl AudioMaster {
         }
     }
 
+    /// When [`AudioMaster::tick`] next has something to do: the clock broadcast, a lock or an
+    /// arbitration timeout.
+    pub fn next_deadline(&self) -> Option<Time> {
+        let clock = self.started.then_some(self.next_clock);
+        let lock = self.lock_pending.then_some(self.lock_deadline);
+        let arbitration = (self.bus_state == BusState::Arbitrating).then_some(self.arbitration_deadline);
+        [clock, lock, arbitration].into_iter().flatten().min()
+    }
+
     pub fn set_lock_mode(&mut self, mode: LockMode) {
         self.lock_mode = mode;
     }

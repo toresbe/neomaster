@@ -15,11 +15,14 @@ use render::{Renderer, Scene, SCREEN_HEIGHT, SCREEN_WIDTH};
 use tokio::sync::mpsc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
-use x11rb::protocol::xproto::{ConnectionExt as _, Keycode};
+use x11rb::protocol::xproto::{ConnectionExt as _, KeyButMask, Keycode};
 use x11rb::protocol::Event as XEvent;
 use x11rb::rust_connection::RustConnection;
 
 use crate::core::{Core, Event, PanelOut};
+use crate::link::{self, Link};
+use crate::Pc2Device;
+use masterlink::LinkRole;
 
 pub const KEYS: &str = "\
 neomaster --sim keys (after BeoSound5.exe's own keyboard emulation of the panel):
@@ -31,7 +34,7 @@ neomaster --sim keys (after BeoSound5.exe's own keyboard emulation of the panel)
   Left / Right             LEFT (drill in) / RIGHT (back)
   G or Return              GO; hold for the context menu
   + / -                    volume wheel
-  S                        standby
+  S                        standby (this room); Shift+S: long standby (everything off)
   Esc or Q                 quit
 ";
 
@@ -43,7 +46,7 @@ impl PanelOut for NoPanel {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(role: LinkRole, device: Pc2Device) -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = XRenderer::open_window("neomaster --sim", SCREEN_WIDTH, SCREEN_HEIGHT)?;
     let conn = renderer.connection();
     let window = renderer.window();
@@ -93,7 +96,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let aux_tx = event_tx.clone();
     rt.spawn(crate::core::poll_aux_card(aux_tx));
     let aux_out = a_aux::loopback::Loopback::new(a_aux::loopback::LoopbackConfig::from_env());
-    rt.block_on(Core::new(ui, NoPanel, aux_out, scene_tx).run(event_rx));
+    info!("Masterlink role {role:?}, {device:?} PC2");
+    let pc2 = crate::spawn_pc2(&rt, device, role, event_tx.clone());
+    let link = Link::new(link::Config::new(role));
+    rt.block_on(Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx).run(event_rx));
     drop(rt);
     let _ = render_thread.join();
     Ok(())
@@ -213,6 +219,7 @@ fn input_loop(
                     }
                     (XK_KP_ADD, _) | (_, '+') | (_, '=') => send(panel.report(0, 1))?,
                     (XK_KP_SUBTRACT, _) | (_, '-') => send(panel.report(0, -1))?,
+                    (_, 's') if u16::from(k.state) & u16::from(KeyButMask::SHIFT) != 0 => send(Event::AllStandby)?,
                     (_, 's') => send(Event::Standby)?,
                     _ => {}
                 }

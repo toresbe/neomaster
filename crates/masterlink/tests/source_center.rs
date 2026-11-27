@@ -133,3 +133,43 @@ fn source_connect_passes_the_channel_number() {
     assert_eq!(host.channels, vec![(0xa1, 5)]);
     assert_eq!(host.started, vec![0xa1]);
 }
+
+/// Long standby from our own panel: lock round (PC2 command 24), STANDBY_1 to ALL from PC_1,
+/// then the same stopped and idle SOURCE_STATUS the BM5 sent on a received "all standby".
+#[test]
+fn all_standby_from_this_room() {
+    let mut host = mlgw_host();
+    let mut sc = SourceCenter::new();
+    distribute(&mut sc, &mut host, 0x7a);
+    sc.all_standby(&mut host, at(0.0));
+    assert_eq!(host.lock_requests, 1);
+    assert!(host.sent.is_empty(), "nothing goes out before the lock is granted");
+    sc.all_standby(&mut host, at(0.1)); // a second press while waiting changes nothing
+    assert_eq!(host.lock_requests, 1);
+    sc.bus_lock_granted(&mut host, at(0.2));
+    let captured: Vec<Bytes> =
+        LIVE_KITCHEN_AND_STANDBY.iter().filter(|r| r.out && r.t > 21.0).map(|r| r.bytes.to_vec()).collect();
+    let mut expected = vec![vec![0x80, 0xc2, 0x01, 0x0a, 0x00, 0x00, 0x00, 0x11, 0x00, 0x01]];
+    expected.extend(captured);
+    assert_eq!(host.sent, expected);
+    assert_eq!(host.lock_releases, 1);
+    assert!(!sc.distributing());
+    assert!(!host.distributing);
+    // a late grant does nothing
+    sc.bus_lock_granted(&mut host, at(0.3));
+    assert_eq!(host.sent.len(), 3);
+}
+
+/// Without a grant from the PC2 the all-standby still goes out after the lock timeout.
+#[test]
+fn all_standby_without_lock_grant() {
+    let mut host = mlgw_host();
+    let mut sc = SourceCenter::new();
+    sc.all_standby(&mut host, at(0.0));
+    assert_eq!(sc.next_deadline(), Some(at(0.0) + SourceCenter::LOCK_TIMEOUT));
+    sc.tick(&mut host, at(1.0));
+    assert!(host.sent.is_empty());
+    sc.tick(&mut host, at(2.1));
+    assert_eq!(host.sent, vec![vec![0x80, 0xc2, 0x01, 0x0a, 0x00, 0x00, 0x00, 0x11, 0x00, 0x01]]);
+    assert_eq!(sc.next_deadline(), None);
+}
