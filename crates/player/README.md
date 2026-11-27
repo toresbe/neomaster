@@ -15,30 +15,51 @@ ma.play_media(&queue.unwrap(), &["library://album/131"], QueueOption::Play).awai
 
 ## Why Sendspin
 
-The home server's MA has these player providers enabled: Sendspin, DLNA, AirPlay,
-Chromecast, Sonos (and HA players). There is no Squeezelite (slimproto) or Snapcast
-provider. Sendspin is MA's own protocol: clock-synchronised, PCM over a WebSocket,
-and a Rust client exists (`sendspin` 0.4, from the Sendspin project), so the player is
-an actor in the neomaster binary instead of a separate process to supervise.
+Compared on 27 Nov 2026 against the live MA 2.10.13, each client running as the Debian
+bookworm **i386** build (the Sendspin one is this crate's `bm5_player`) in a container on
+the home server, playing into a PulseAudio null sink. A recorder on the sink's monitor
+timed when sound actually came out after `play_media` and after `next`. LAN source,
+6 trials each, medians:
+
+| Client (MA provider) | `play_media` → sound | `next` → sound | CPU while cycling* | RSS |
+|---|---|---|---|---|
+| Sendspin, this crate (`sendspin`, beta, built in) | 0.32 s | 1.29 s | 1.3 % | 19 MB |
+| Squeezelite 1.9.9 (`squeezelite`, stable) | 0.29 s | 1.27 s | 0.8 % | 35 MB |
+| Snapcast 0.26 client (`snapcast`, unmaintained) | 1.06 s | 2.78 s | 0.5 % | 10 MB |
+
+\* Share of one Ryzen 9 5950X core, averaged over play/skip/stop cycles; the C7 is many
+times slower, so expect roughly ten times these figures on the BM5.
+
+- Sendspin and Squeezelite are equally fast: about 1 s of every skip is MA preparing
+  the next stream, whichever client is used. Snapcast's fixed buffer adds about 1 s to
+  everything, and MA no longer maintains its Snapcast provider.
+- Sendspin runs inside the neomaster binary as an actor: no second process to supervise,
+  and stream start and end arrive as events for PC2 routing. It is MA's own protocol.
+- Squeezelite is the more mature client and uses a little less CPU (it decodes FLAC; the
+  Sendspin client receives PCM but runs its own clock-sync and resampling in f32). It
+  would run as a supervised process, with its power hook for PC2 routing.
+
+Choice: Sendspin, with Squeezelite as the fallback if the `sendspin` crate (marked work in
+progress upstream) misbehaves or its CPU load is too high on the C7. The deciding
+measurement is CPU on the BM5 itself (milestone M0).
 
 The existing "BeoMaster5" player in MA comes from MA's `dlna` provider, so it is most
 likely the stock BeoSound 5 software's DLNA renderer, and would go away with it.
 
-## Measured latency
+## Measured latency (schedule-based probe)
 
 `examples/latency_probe.rs` registers a Sendspin player whose output only records when
-each buffer would be heard, then drives MA (2.10.13) with `play_media` and `next`. LAN
-WAV source, home server, 5 trials each:
+each buffer is scheduled to be heard, then drives MA with `play_media` and `next`. LAN WAV
+source, home server, 5 trials each:
 
 | Lead time offered | `play_media` → sound | `next` → sound |
 |---|---|---|
 | 500 ms | 590 ms | 1.56 s |
 | 200 ms | 290 ms | 1.26 s |
 
-The first buffer arrives about 75 ms after `play_media`; the rest is the lead time.
-After `next`, MA takes about 1.05 s before the new stream starts, whatever the client
-(the Python reference client measured the same). The UI should show the new track
-at once and not wait for the audio. Spotify sources add the provider's own start time.
+The first buffer arrives about 75 ms after `play_media`; the rest is the lead time. The UI
+should show the new track at once and not wait for the audio. Spotify sources add the
+provider's own start time.
 
 ## Notes
 
