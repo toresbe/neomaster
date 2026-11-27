@@ -2,12 +2,12 @@
 //! start/stop behaviour.
 //!
 //! `cards_no_codec.txt` is a real /proc/asound/cards (a desktop with an Audient EVO8).
-//! `cards_bm5.txt` is the BeoMaster 5 itself (Debian 10, 2026-11-27): its A.AUX input is a
-//! built-in TI PCM2902 (USB 08bb:2902) next to the VIA VT1708 onboard audio.
+//! `cards_bm5.txt` is the BeoMaster 5 (Debian 10, 2026-11-27) with B&O's A.AUX USB adapter, a
+//! TI PCM2902 (USB 08bb:2902), plugged in next to the VIA VT1708 onboard audio.
 
 use a_aux::device::{find_usb_audio_codec, is_usb_audio_codec, parse_cards};
 use a_aux::loopback::LoopbackConfig;
-use a_aux::{AuxSource, Card, Effect};
+use a_aux::{AuxSource, Card, CardSelector, Effect};
 
 const PCM2902: &str = include_str!("data/cards_bm5.txt");
 const NO_CODEC: &str = include_str!("data/cards_no_codec.txt");
@@ -115,4 +115,21 @@ fn loopback_notices_a_loop_that_exits() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(!l.ended()); // reported once
+}
+
+#[test]
+fn card_selector() {
+    let bm5 = parse_cards(PCM2902);
+    let desk = parse_cards(NO_CODEC);
+    assert_eq!(CardSelector::parse(""), CardSelector::UsbAudioCodec);
+    assert_eq!(CardSelector::parse("  "), CardSelector::UsbAudioCodec);
+    assert_eq!(CardSelector::default().select(&bm5).unwrap().id, "CODEC");
+    assert_eq!(CardSelector::default().select(&desk), None);
+    // by ALSA id
+    assert_eq!(CardSelector::parse("EVO8").select(&desk).unwrap().index, 2);
+    // by name, ignoring case; the id wins over a name that also matches
+    assert_eq!(CardSelector::parse("audient").select(&desk).unwrap().id, "EVO8");
+    assert_eq!(CardSelector::parse("Generic").select(&desk).unwrap().id, "Generic");
+    assert_eq!(CardSelector::parse("vt82xx").select(&bm5).unwrap().id, "VT82xx");
+    assert_eq!(CardSelector::parse("nothing like it").select(&bm5), None);
 }

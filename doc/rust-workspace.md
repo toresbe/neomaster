@@ -134,6 +134,8 @@ What neomaster does:
   BeoSound5.exe it waits for a missing card and resumes after replugging.
 - `a_aux::loopback::Loopback` runs `alsaloop -C plughw:CARD=<id>,DEV=0 -P <playback> -t 50000`.
   `NEOMASTER_AUX_PLAYBACK` picks the playback device, `NEOMASTER_AUX_LATENCY_US` the latency.
-  On the BM5 the A.AUX input is a built-in PCM2902 (USB 08bb:2902, ALSA card `CODEC`) and card 0
-  is the VIA VT1708 onboard audio (`hw:VT82xx,0`), so `default` already plays to it.
+  The card is not part of the BM5: B&O delivered a PCM2902 USB adapter with it (USB 08bb:2902,
+  ALSA card `CODEC`). `NEOMASTER_AUX_CARD` picks another capture card by ALSA id or by part of
+  its name (unset: BeoSound5.exe's "USB Audio CODEC" rule). On the BM5 card 0 is the VIA VT1708
+  onboard audio (`hw:VT82xx,0`), so the `default` playback device already plays to it.
 - The DMR half is not replicated; Music Assistant covers network streams.

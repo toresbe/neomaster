@@ -83,8 +83,52 @@ pub fn find_usb_audio_codec(cards: &[Card]) -> Option<Card> {
     cards.iter().find(|c| is_usb_audio_codec(&c.name) || is_usb_audio_codec(&c.long_name)).cloned()
 }
 
-/// Read `/proc/asound/cards` and find the card. Missing file (no ALSA) = no card.
-pub fn scan() -> Option<Card> {
+/// Which sound card A.AUX plays. B&O shipped a PCM2902 USB line-in adapter with the BM5, and
+/// BeoSound5.exe only ever looked for that one; neomaster lets any capture card be used.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CardSelector {
+    /// BeoSound5.exe's rule: the first card named like "USB Audio CODEC".
+    #[default]
+    UsbAudioCodec,
+    /// The card with this ALSA id (e.g. "CODEC", "EVO8"), or failing that the first whose name
+    /// contains this text, ignoring case.
+    Named(String),
+}
+
+impl CardSelector {
+    /// `NEOMASTER_AUX_CARD`: unset or empty = [`CardSelector::UsbAudioCodec`], otherwise
+    /// [`CardSelector::Named`].
+    pub fn from_env() -> Self {
+        Self::parse(&std::env::var("NEOMASTER_AUX_CARD").unwrap_or_default())
+    }
+
+    pub fn parse(value: &str) -> Self {
+        let value = value.trim();
+        if value.is_empty() {
+            CardSelector::UsbAudioCodec
+        } else {
+            CardSelector::Named(value.to_string())
+        }
+    }
+
+    pub fn select(&self, cards: &[Card]) -> Option<Card> {
+        match self {
+            CardSelector::UsbAudioCodec => find_usb_audio_codec(cards),
+            CardSelector::Named(want) => {
+                let lower = want.to_lowercase();
+                let contains = |s: &str| s.to_lowercase().contains(&lower);
+                cards
+                    .iter()
+                    .find(|c| c.id == *want)
+                    .or_else(|| cards.iter().find(|c| contains(&c.name) || contains(&c.long_name)))
+                    .cloned()
+            }
+        }
+    }
+}
+
+/// Read `/proc/asound/cards` and pick the card. Missing file (no ALSA) = no card.
+pub fn scan(selector: &CardSelector) -> Option<Card> {
     let text = std::fs::read_to_string("/proc/asound/cards").unwrap_or_default();
-    find_usb_audio_codec(&parse_cards(&text))
+    selector.select(&parse_cards(&text))
 }

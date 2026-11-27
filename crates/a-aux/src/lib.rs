@@ -12,6 +12,9 @@
 //!   plays through. No processing, no track info ("TAG-info is send from AUX but not impl.").
 //! - The device is found by the case-insensitive regex `USB\s+AUDIO\s+CODEC`.
 //! - Plugging the card in only logs; unplugging it while A.AUX plays tells the source.
+//! - The card is not part of the BM5: B&O delivered a PCM2902 USB line-in adapter with it.
+//!   neomaster defaults to that card and can use any other (`NEOMASTER_AUX_CARD`, see
+//!   [`device::CardSelector`]).
 //!
 //! On the link, A.AUX is ML source 0x97 when the BM5 is audio master and rides on the N.MUSIC
 //! slot when it is a source center: see `masterlink::sources`.
@@ -23,7 +26,7 @@
 pub mod device;
 pub mod loopback;
 
-pub use device::Card;
+pub use device::{Card, CardSelector};
 
 /// What the A.AUX source wants done.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,7 +67,7 @@ impl AuxSource {
         self.reconcile()
     }
 
-    /// The USB sound card came, went or changed (from [`device::find_usb_audio_codec`]).
+    /// The USB sound card came, went or changed (from [`device::scan`]).
     pub fn set_card(&mut self, card: Option<Card>) -> Vec<Effect> {
         self.card = card;
         self.reconcile()

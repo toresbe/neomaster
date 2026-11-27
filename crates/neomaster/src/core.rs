@@ -126,7 +126,7 @@ impl<P: PanelOut, A: AuxOut> Core<P, A> {
                     // Only A.AUX plays anything yet; picking another source stops it.
                     let fx = if s == "A.AUX" { self.aux.select() } else { self.aux.deselect() };
                     if s == "A.AUX" && self.aux.card().is_none() {
-                        info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
+                        info!("A.AUX: waiting for its sound card (NEOMASTER_AUX_CARD)");
                     }
                     self.aux_effects(fx);
                 }
@@ -204,11 +204,12 @@ impl<P: PanelOut, A: AuxOut> Core<P, A> {
 }
 
 /// Look for the A.AUX card every [`AUX_POLL`] and tell the core. Ends when the core is gone.
-pub async fn poll_aux_card(events: mpsc::UnboundedSender<Event>) {
+pub async fn poll_aux_card(selector: a_aux::CardSelector, events: mpsc::UnboundedSender<Event>) {
     let mut interval = tokio::time::interval(AUX_POLL);
     loop {
         interval.tick().await;
-        let card = tokio::task::spawn_blocking(a_aux::device::scan).await.unwrap_or(None);
+        let s = selector.clone();
+        let card = tokio::task::spawn_blocking(move || a_aux::device::scan(&s)).await.unwrap_or(None);
         if events.send(Event::AuxCard(card)).is_err() {
             return;
         }
