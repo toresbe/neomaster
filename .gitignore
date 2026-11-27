@@ -42,3 +42,6 @@
 /build
 *.swp
 *.swo
+
+# Rust
+/target

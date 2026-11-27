@@ -1,0 +1,10 @@
+[package]
+name = "masterlink"
+description = "Sans-IO Masterlink: telegram codec, protocol constants, AudioMaster and SourceCenter (port of libpc2/masterlink)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+log.workspace = true

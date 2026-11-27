@@ -1,0 +1,11 @@
+[package]
+name = "ui"
+description = "neomaster's panel UI: pointer zones, views, navigation and animation, as state -> scene"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+bs5-panel.workspace = true
+render.workspace = true

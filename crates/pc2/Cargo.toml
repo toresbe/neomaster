@@ -1,0 +1,10 @@
+[package]
+name = "pc2"
+description = "Sans-IO driver for the B&O PC2 / Beolink PC2 (port of libpc2/pc2): framing, pacing, mixer, fan loop, IR"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+log.workspace = true

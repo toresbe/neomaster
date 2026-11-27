@@ -1,0 +1,8 @@
+# Cross-building for the BeoMaster 5 (VIA C7-D: 32-bit x86, SSE2/SSE3, no SSSE3 or x86-64).
+# i686-unknown-linux-gnu already assumes SSE2, which the C7 has.
+#
+# The linker name below is Debian/Ubuntu's (apt install gcc-i686-linux-gnu libc6-dev-i386-cross).
+# Elsewhere, override it, e.g. CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=gcc with
+# RUSTFLAGS="-C link-arg=-m32" on a multilib host. See doc/rust-workspace.md.
+[target.i686-unknown-linux-gnu]
+linker = "i686-linux-gnu-gcc"
