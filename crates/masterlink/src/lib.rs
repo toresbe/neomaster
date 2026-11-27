@@ -19,7 +19,7 @@ pub mod track_info;
 pub use audio_master::{AudioMaster, BusState, LockMode};
 pub use host::{Effect, Effects, Host};
 pub use source_center::SourceCenter;
-pub use sources::{LinkRole, LocalSource, SourceMap};
+pub use sources::{LinkRole, LocalSource, SourceMap, AIRPLAY_SLOT};
 pub use telegram::Telegram;
 pub use track_info::TrackInfo;
 

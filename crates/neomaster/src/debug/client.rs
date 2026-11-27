@@ -45,7 +45,7 @@ Offline:
 
 Records are JSON Lines: {\"t\": seconds, \"kind\": ..}. Kinds: hello, log, panel_in, panel_input,
 panel_out, ui_effect, app_effect, ir, ml_in, ml_out, pc2_in, pc2_out, pc2_refused, pc2_session,
-usb_in, usb_out, core_event, inject, state, timing, mark, lagged, ok, error.
+usb_in, usb_out, core_event, airplay, airplay_item, inject, state, timing, mark, lagged, ok, error.
 The socket defaults to $NEOMASTER_DEBUG_SOCKET, $XDG_RUNTIME_DIR/neomaster-debug.sock or
 /tmp/neomaster-debug.sock; the TCP port to 7155.
 ";

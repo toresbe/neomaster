@@ -457,6 +457,9 @@ impl Ui {
     }
 
     fn paint_now_playing(&mut self, s: &mut Scene, opacity: f32) {
+        if let Some(e) = self.external.clone() {
+            return self.paint_external(s, &e, opacity);
+        }
         let Some(t) = self.playing else {
             let cover = self.assets.cover_large.clone();
             s.image(&cover, Rect::new(55, 116, 512, 512), opacity);
@@ -470,6 +473,32 @@ impl Ui {
             s.text(608, 382 + (i as f32 * 38.5).round() as i32, NP_SIZE, NP_GREY.with_opacity(opacity), Align::Left, line);
         }
         let caption = format!("{} / {}", self.lib.artists[self.lib.albums[album].artist].name, self.lib.albums[album].title);
+        let caption = fit(&mut self.font, &caption, SMALL as u16, 512.0);
+        s.text(55, 652, SMALL as u16, CAPTION_GREY.with_opacity(opacity), Align::Left, caption);
+    }
+
+    /// Now-playing for an outside source (AirPlay), laid out like the library's: cover, title
+    /// beside it, "artist / album" below; the source (and the sender, and PAUSED) above the title.
+    fn paint_external(&mut self, s: &mut Scene, e: &crate::External, opacity: f32) {
+        let cover = e.cover.clone().unwrap_or_else(|| self.assets.cover_large.clone());
+        s.image(&cover, Rect::new(55, 116, 512, 512), opacity);
+        let mut header = e.source.clone();
+        for part in [e.from.as_str(), if e.paused { "PAUSED" } else { "" }] {
+            if !part.is_empty() {
+                header = format!("{header} · {part}");
+            }
+        }
+        let header = fit(&mut self.font, &header, SMALL as u16, 400.0);
+        s.text(608, 340, SMALL as u16, CAPTION_GREY.with_opacity(opacity), Align::Left, header);
+        let title = if e.title.is_empty() { &e.source } else { &e.title };
+        for (i, line) in wrap(&mut self.font, title, NP_SIZE, 240.0, 3).into_iter().enumerate() {
+            s.text(608, 382 + (i as f32 * 38.5).round() as i32, NP_SIZE, NP_GREY.with_opacity(opacity), Align::Left, line);
+        }
+        let caption = match (e.artist.is_empty(), e.album.is_empty()) {
+            (false, false) => format!("{} / {}", e.artist, e.album),
+            (false, true) => e.artist.clone(),
+            (true, _) => e.album.clone(),
+        };
         let caption = fit(&mut self.font, &caption, SMALL as u16, 512.0);
         s.text(55, 652, SMALL as u16, CAPTION_GREY.with_opacity(opacity), Align::Left, caption);
     }

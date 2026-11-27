@@ -25,6 +25,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "airplay"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "fast_image_resize",
+ "libc",
+ "log",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1090,6 +1101,7 @@ name = "neomaster"
 version = "0.1.0"
 dependencies = [
  "a-aux",
+ "airplay",
  "bs5-panel",
  "env_logger",
  "libc",

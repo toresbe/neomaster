@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use a_aux::AuxSource;
 use bs5_panel::{Decoder, Output, Report};
 use log::{debug, info};
-use masterlink::{LinkRole, LocalSource};
+use masterlink::{LinkRole, LocalSource, TrackInfo};
 use render::Scene;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -42,6 +42,11 @@ pub enum Event {
     AuxCard(Option<a_aux::Card>),
     /// The machine facts for the SETTINGS menu, gathered off the core task.
     Facts(Box<settings::menu::Facts>),
+    /// From the AirPlay receiver: a metadata item, or shairport-sync restarted.
+    AirPlay(airplay::receiver::Report),
+    /// The cover art from the `PICT` item just before, decoded to [`ui::COVER_SIZE`] (`None`:
+    /// the sender has none, or it could not be decoded). Decoded on the receiver's thread.
+    AirPlayCover(Option<std::sync::Arc<render::Image>>),
     /// The screen needs redrawing (window exposed).
     Redraw,
     /// The N.RADIO actor matched preset `number`'s name to this Music Assistant station.
@@ -83,6 +88,32 @@ impl AuxOut for a_aux::loopback::Loopback {
     }
 }
 
+/// Where AirPlay effects go: the shairport-sync receiver.
+pub trait AirPlayOut: Send {
+    fn apply(&mut self, effect: airplay::Effect);
+}
+
+impl AirPlayOut for airplay::receiver::Receiver {
+    fn apply(&mut self, effect: airplay::Effect) {
+        airplay::receiver::Receiver::apply(self, effect)
+    }
+}
+
+/// No AirPlay receiver (disabled, or tests).
+pub struct NoAirPlay;
+
+impl AirPlayOut for NoAirPlay {
+    fn apply(&mut self, _: airplay::Effect) {}
+}
+
+/// The panel's and the link rooms' name for AirPlay.
+const AIRPLAY: &str = "AIRPLAY";
+
+/// An AirPlay track goes to link rooms once it has stood this long. Senders send several
+/// metadata bundles in a burst (Music Assistant sends its queue neighbours' before the playing
+/// track's), and each costs seven telegrams on the link.
+const LINK_TRACK_SETTLE: Duration = Duration::from_secs(1);
+
 /// Where messages for the PC2 go (the PC2 actor's command channel).
 pub trait Pc2Out: Send {
     fn send(&mut self, cmd: Pc2Cmd);
@@ -106,6 +137,10 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
     panel_out: P,
     aux: AuxSource,
     aux_out: A,
+    airplay: airplay::Session,
+    airplay_out: Box<dyn AirPlayOut>,
+    /// An AirPlay track waiting for [`LINK_TRACK_SETTLE`] before it goes to link rooms.
+    link_track: Option<(Time, TrackInfo)>,
     link: Link,
     pc2_out: Q,
     scenes: std_mpsc::SyncSender<Scene>,
@@ -146,6 +181,9 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             panel_out,
             aux: AuxSource::new(),
             aux_out,
+            airplay: airplay::Session::new(),
+            airplay_out: Box::new(NoAirPlay),
+            link_track: None,
             link,
             pc2_out,
             scenes,
@@ -254,6 +292,97 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         });
     }
 
+    /// Take AirPlay effects to this receiver (the default is none).
+    pub fn with_airplay(mut self, out: Box<dyn AirPlayOut>) -> Self {
+        self.airplay_out = out;
+        self
+    }
+
+    /// Something other than AirPlay plays now, or nothing does: end the AirPlay session.
+    fn drop_airplay(&mut self, now: Time) {
+        if self.airplay.is_active() {
+            self.airplay_out.apply(airplay::Effect::Drop);
+            // The restart report would say the same; act now so the panel does not lag.
+            let ev = self.airplay.receiver_restarted();
+            self.airplay_events(ev, now);
+        }
+    }
+
+    fn airplay_report(&mut self, report: airplay::receiver::Report, now: Time) {
+        let ev = match report {
+            airplay::receiver::Report::Item(item) => {
+                self.tap.emit("airplay_item", || json!({ "item": format!("{item:?}") }));
+                self.airplay.item(&item, now)
+            }
+            airplay::receiver::Report::Restarted => self.airplay.receiver_restarted(),
+        };
+        self.airplay_events(ev, now);
+    }
+
+    fn airplay_events(&mut self, events: Vec<airplay::Event>, now: Time) {
+        for e in events {
+            self.tap.emit("airplay", || {
+                json!({ "event": match &e {
+                    airplay::Event::Cover(c) => format!("Cover({} bytes)", c.len()),
+                    e => format!("{e:?}"),
+                } })
+            });
+            match e {
+                airplay::Event::Started(sender) => {
+                    info!("AirPlay: {} started streaming; taking the source", sender.label());
+                    // shairport-sync plays at once; A.AUX's loop must not hold the output.
+                    let fx = self.aux.deselect();
+                    self.aux_effects(fx);
+                    self.ui.set_external(Some(ui::External {
+                        source: AIRPLAY.into(),
+                        from: sender.name.clone().unwrap_or_default(),
+                        ..Default::default()
+                    }));
+                    let fx = self.ui.show_now_playing(now);
+                    self.effects(fx, now);
+                    let out = self.link.track_info(TrackInfo::unknown(), now);
+                    self.link_out(out, now);
+                    let out = self.link.select_source(LocalSource::AirPlay, now);
+                    self.link_out(out, now);
+                }
+                airplay::Event::Track(t) => {
+                    info!("AirPlay: {} - {}", t.artist, t.title);
+                    if let Some(x) = self.ui.external_mut() {
+                        (x.title, x.artist, x.album) = (t.title.clone(), t.artist.clone(), t.album.clone());
+                    }
+                    self.link_track = Some((now + LINK_TRACK_SETTLE, track_info(&t)));
+                }
+                // The decoded copy arrives as Event::AirPlayCover.
+                airplay::Event::Cover(_) => {}
+                airplay::Event::Paused | airplay::Event::Resumed => {
+                    let paused = e == airplay::Event::Paused;
+                    if let Some(x) = self.ui.external_mut() {
+                        x.paused = paused;
+                    }
+                    self.ui.set_playing(!paused);
+                }
+                airplay::Event::Ended => {
+                    info!("AirPlay: streaming ended; releasing the source");
+                    self.ui.set_external(None);
+                    self.link_track = None;
+                    let out = self.link.release_source(LocalSource::AirPlay, now);
+                    self.link_out(out, now);
+                    let out = self.link.track_info(TrackInfo::unknown(), now);
+                    self.link_out(out, now);
+                }
+            }
+        }
+    }
+
+    /// Send the settled AirPlay track to link rooms, if it is due.
+    fn send_link_track(&mut self, now: Time) {
+        if self.link_track.as_ref().is_some_and(|(due, _)| *due <= now) {
+            let (_, info) = self.link_track.take().unwrap();
+            let out = self.link.track_info(info, now);
+            self.link_out(out, now);
+        }
+    }
+
     fn aux_effects(&mut self, fx: Vec<a_aux::Effect>) {
         for e in &fx {
             self.aux_out.apply(e);
@@ -350,6 +479,9 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     } else {
                         self.radio_stop();
                     }
+                    if s != LocalSource::AirPlay {
+                        self.drop_airplay(now);
+                    }
                     let fx = if s == LocalSource::AAux {
                         if self.aux.card().is_none() {
                             info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
@@ -363,6 +495,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 AppEffect::Stop => {
                     info!("stop playback");
                     self.radio_stop();
+                    self.drop_airplay(now);
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                     // The stock UI blanks when its source stops and nothing local listens.
@@ -441,6 +574,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 // yet; A.AUX is.
                 Effect::StopLocalPlayback => {
                     self.radio_stop();
+                    self.drop_airplay(now);
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                 }
@@ -462,6 +596,9 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 Effect::SelectSource(s) => {
                     info!("select source {s}");
                     if let Some(local) = self.local_source(s) {
+                        // Picking a source on the panel ends AirPlay at once, even where the new
+                        // source waits for the room's master to connect it.
+                        self.drop_airplay(now);
                         let out = self.link.select_source(local, now);
                         self.link_out(out, now);
                     }
@@ -566,6 +703,14 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 self.ui.set_facts(*f);
                 return self.ui.settings_open();
             }
+            Event::AirPlay(report) => self.airplay_report(report, now),
+            Event::AirPlayCover(image) => {
+                if self.airplay.is_active() {
+                    if let Some(x) = self.ui.external_mut() {
+                        x.cover = image;
+                    }
+                }
+            }
             Event::Redraw => {}
             Event::Debug(i) => return self.inject(i, now),
             Event::Quit => {}
@@ -660,6 +805,12 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             "blanked": self.ui.blanked(),
             "aux_card": self.aux.card().map(|c| c.to_string()),
             "radio_preset": self.tuner.current().map(|p| json!({ "number": p.number, "name": p.name })),
+            "airplay": self.airplay.is_active().then(|| json!({
+                "sender": self.airplay.sender().label(),
+                "title": self.airplay.track().title,
+                "artist": self.airplay.track().artist,
+                "paused": self.airplay.is_paused(),
+            })),
         })
     }
 
@@ -686,7 +837,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
 
     /// The next moment the core has to wake up without an event.
     fn deadline(&self, now: Time) -> Time {
-        [self.ui_deadline(now), self.link.next_deadline()]
+        [self.ui_deadline(now), self.link.next_deadline(), self.airplay.next_deadline(), self.link_track.as_ref().map(|t| t.0)]
             .into_iter()
             .flatten()
             .min()
@@ -736,7 +887,11 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     self.radio_tune(t);
                     let out = self.link.tick(now);
                     self.link_out(out, now);
-                    ui_due
+                    let ev = self.airplay.tick(now);
+                    let airplay_ended = !ev.is_empty();
+                    self.airplay_events(ev, now);
+                    self.send_link_track(now);
+                    ui_due || airplay_ended
                 }
             };
             let handled = started.elapsed();
@@ -751,6 +906,57 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 });
                 self.emit_state(false);
             }
+        }
+    }
+}
+
+/// What link rooms show for an AirPlay track. Fields the sender left out get B&O's "unknown"
+/// texts, as its own players send for untagged tracks.
+fn track_info(t: &airplay::Track) -> TrackInfo {
+    let or = |s: &str, d: &str| if s.is_empty() { d.to_string() } else { s.to_string() };
+    TrackInfo {
+        genre: or(&t.genre, TrackInfo::UNKNOWN_GENRE),
+        album: or(&t.album, TrackInfo::UNKNOWN_ALBUM),
+        artist: or(&t.artist, TrackInfo::UNKNOWN_ARTIST),
+        title: or(&t.title, TrackInfo::UNKNOWN_TITLE),
+        ..TrackInfo::unknown()
+    }
+}
+
+fn rgb_to_rgba(rgb: &[u8]) -> Vec<u8> {
+    rgb.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+}
+
+/// Start the AirPlay receiver (shairport-sync), reporting to the core. Cover art is decoded on
+/// the receiver's thread. It plays to `device` (A.AUX's playback device: the output the PC2
+/// hears) unless `NEOMASTER_AIRPLAY_DEVICE` says otherwise. `None` if it is switched off or
+/// cannot be set up.
+pub fn start_airplay(events: mpsc::UnboundedSender<Event>, device: &str) -> Option<airplay::receiver::Receiver> {
+    let config = airplay::receiver::ReceiverConfig::from_env_with_device(device)?;
+    let report = move |r: airplay::receiver::Report| {
+        let cover = match &r {
+            airplay::receiver::Report::Item(i) if i.kind == airplay::code::SSNC && i.code == airplay::code::PICT => {
+                Some(match airplay::cover::decode_square(&i.data, ui::COVER_SIZE) {
+                    Ok(img) => Some(render::Image::new(img.width, img.height, rgb_to_rgba(&img.data))),
+                    Err(airplay::cover::Error::Empty) => None,
+                    Err(e) => {
+                        log::warn!("AirPlay: {e}");
+                        None
+                    }
+                })
+            }
+            _ => None,
+        };
+        let _ = events.send(Event::AirPlay(r));
+        if let Some(c) = cover {
+            let _ = events.send(Event::AirPlayCover(c));
+        }
+    };
+    match airplay::receiver::Receiver::start(config, report) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            log::warn!("AirPlay: could not set up the receiver: {e}");
+            None
         }
     }
 }
@@ -883,6 +1089,100 @@ mod tests {
     async fn panel_pick_selects_n_radio_at_the_preset() {
         let cmds = radio_run(LinkRole::AudioMaster, vec![Event::Pc2Connected, Event::Debug(Inject::RadioPreset(1))]).await;
         assert_eq!(plays(&cmds), [1], "{cmds:?}");
+    }
+
+    #[derive(Clone, Default)]
+    struct AirPlayLog(std::sync::Arc<std::sync::Mutex<Vec<airplay::Effect>>>);
+    impl AirPlayOut for AirPlayLog {
+        fn apply(&mut self, e: airplay::Effect) {
+            self.0.lock().unwrap().push(e);
+        }
+    }
+
+    fn items(text: &str) -> Vec<airplay::Item> {
+        airplay::Parser::new().feed(text.as_bytes()).0
+    }
+
+    fn sent_telegrams(rx: &mut mpsc::UnboundedReceiver<Pc2Cmd>) -> Vec<Vec<u8>> {
+        let mut v = vec![];
+        while let Ok(c) = rx.try_recv() {
+            if let Pc2Cmd::Telegram(t) = c {
+                v.push(t);
+            }
+        }
+        v
+    }
+
+    /// A captured AirPlay session (Music Assistant to shairport-sync) through the core, as a
+    /// link source: the room's master gets the N.MUSIC key, the panel shows the track, the
+    /// release sends STANDBY; picking another source drops a running session.
+    #[test]
+    fn airplay_session_takes_and_releases_the_source() {
+        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (pc2_tx, mut pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+        let link = Link::new(link::Config::new(LinkRole::SourceCenter));
+        let log = AirPlayLog::default();
+        let mut core = Core::new(Ui::new(ui::fake::Library::generate()), NoPanel, NoAux, link, pc2_tx, scene_tx)
+            .with_tap(Tap::new())
+            .with_airplay(Box::new(log.clone()));
+        let t = Duration::from_secs(1);
+        core.event(Event::Pc2Connected, t);
+        sent_telegrams(&mut pc2_rx);
+
+        let capture = items(include_str!("../../airplay/tests/data/ma_session.txt"));
+        let pend = capture.iter().position(|i| i.code == airplay::code::PEND).unwrap();
+        for item in &capture[..pend] {
+            core.event(Event::AirPlay(airplay::receiver::Report::Item(item.clone())), t);
+        }
+        let n_music_key =
+            [0xc0, 0xc1, 0x01, 0x0a, 0x00, 0x47, 0x00, 0x20, 0x05, 0x02, 0x00, 0x01, 0xff, 0xff, pc2::beo4::N_MUSIC];
+        let sent = sent_telegrams(&mut pc2_rx);
+        assert!(sent.iter().any(|s| s[..15] == n_music_key), "{sent:02x?}");
+        let x = core.ui.external().expect("the panel shows AirPlay");
+        assert_eq!((x.source.as_str(), x.title.as_str()), ("AIRPLAY", "All In Love Is Fair"));
+        assert!(x.paused, "the capture ends paused");
+        core.event(Event::AirPlayCover(Some(render::Image::new(2, 2, vec![0; 16]))), t);
+        assert!(core.ui.external().unwrap().cover.is_some());
+
+        // pend, then the grace period
+        core.event(Event::AirPlay(airplay::receiver::Report::Item(capture[pend].clone())), t);
+        assert!(core.ui.external().is_some());
+        let later = t + airplay::Session::END_GRACE;
+        let ev = core.airplay.tick(later);
+        core.airplay_events(ev, later);
+        assert!(core.ui.external().is_none());
+        // never connected by the room's master: no STANDBY for a room on something else
+        let standby_key =
+            [0xc0, 0xc1, 0x01, 0x0a, 0x00, 0x47, 0x00, 0x20, 0x05, 0x02, 0x00, 0x01, 0xff, 0xff, pc2::beo4::STANDBY];
+        assert!(!sent_telegrams(&mut pc2_rx).iter().any(|s| s[..15] == standby_key));
+        assert!(log.0.lock().unwrap().is_empty(), "the session ended by itself");
+
+        // a new session, connected this time; then N.MUSIC picked on the panel drops it
+        for item in &capture[..pend] {
+            core.event(Event::AirPlay(airplay::receiver::Report::Item(item.clone())), later);
+        }
+        let connect = [
+            0xc2, 0xc1, 0x01, 0x0b, 0x7a, 0x00, 0x00, 0x6c, 0x0a, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x01, 0xff, 0x02,
+            0x00,
+        ];
+        let connect = masterlink::Telegram::decode(&connect).unwrap().encode();
+        core.event(Event::Pc2(pc2::Event::Masterlink(connect)), later);
+        assert_eq!(core.link.playing(), Some(LocalSource::AirPlay));
+        // the track reaches the room once it has settled, as DISPLAY_DATA and six METADATA
+        sent_telegrams(&mut pc2_rx);
+        core.send_link_track(later);
+        assert!(sent_telegrams(&mut pc2_rx).is_empty(), "not before it settles");
+        core.send_link_track(later + LINK_TRACK_SETTLE);
+        let info = sent_telegrams(&mut pc2_rx);
+        assert_eq!(info.len(), 7);
+        assert!(info.iter().any(|t| t.windows(19).any(|w| w == b"All In Love Is Fair")), "{info:02x?}");
+        let fx = vec![Effect::SelectSource("N.MUSIC")];
+        core.effects(fx, later);
+        // N.MUSIC shares the slot here, so it plays at once and AirPlay is dropped
+        assert_eq!(core.link.playing(), Some(LocalSource::NMusic));
+        assert_eq!(*log.0.lock().unwrap(), vec![airplay::Effect::Drop]);
+        assert!(core.ui.external().is_none());
+        assert!(!core.airplay.is_active());
     }
 
     /// The core with a debug tap: injected input takes the real path, and the stream shows it.

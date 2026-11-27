@@ -93,6 +93,8 @@ Every record is an object with `t` (seconds since start-up) and `kind`, then fie
 | `pc2_session` | `state`: `open` with `mode`, then `Gone` or `Shutdown` |
 | `usb_in`, `usb_out` | `raw`: every USB packet to and from the PC2 (left out unless asked for) |
 | `core_event` | `event`: PC2 connected / gone, standby, quit |
+| `airplay` | `event`: an AirPlay session event (Started, Track, Cover, Paused, Resumed, Ended) |
+| `airplay_item` | `item`: one item from shairport-sync's metadata pipe (type, code, text or size) |
 | `inject` | `inject`: what a client injected |
 | `state` | `changed` (`{field: [old, new]}`) and the full `state`: after each change, and on request |
 | `timing` | `trigger` (`events` or `tick`), `events`, `handle_us`, `draw_us`, `redraw`: one per core loop turn |
