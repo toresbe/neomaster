@@ -12,13 +12,13 @@ what exists and how to build it.
 | `crates/pc2` | PC2 framing, fragment assembler, wake-up packets, telegram pacer, mixer, fan loop, start-up and dispatch, sans-IO | Ported from libpc2; driven over USB by the binary's PC2 actor |
 | `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; USB adapter not written yet (M4) |
 | `crates/render` | Scene types, glyph rasterising (fontdue), images (PNG), XRender backend (x11rb) | Fills, text and images (scaled, cropped, tinted, additive, rotated) |
-| `crates/ui` | Pointer zones, views, navigation, animation, layout and assets; state in, scene out | Stock layout measured from the 27 Nov screenshots: menu arc with beam, list and cover curves, now-playing, long-GO menu, volume arc, SETTINGS arc, view-switch fades, idle and blanking, on fake data. Uses the BM5's own font and textures from `$NEOMASTER_STOCK_ASSETS`, drawn look-alikes otherwise |
-| `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; not wired into the binary yet |
-| `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; not wired into the binary yet |
+| `crates/ui` | Pointer zones, views, navigation, animation, layout and assets; state in, scene out | Stock layout measured from the 27 Nov screenshots: menu arc with beam, list and cover curves, now-playing, long-GO menu, volume arc, SETTINGS arc, view-switch fades, idle and blanking. Browses the Music Assistant library mirror (`ui::Library`), or a made-up one without MA. Uses the BM5's own font and textures from `$NEOMASTER_STOCK_ASSETS`, drawn look-alikes otherwise |
+| `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; the N.MUSIC actor uses it |
+| `crates/library` | SQLite mirror of the MA library (sort keys, letter index, playlist contents), event-driven sync, cover atlas (mmap, RGB565, browse order) | Mirrors the live library; feeds the panel's lists and covers |
 | `crates/a-aux` | A.AUX: finds the USB sound card ("USB Audio CODEC"), sans-IO source state, `alsaloop` adapter | Selecting A.AUX on the panel plays the card's line in; card detection checked on the BM5, playback not yet |
 | `crates/radio` | N.RADIO presets: numbered list (TOML), Beo4 digit entry and ▲ ▼, channel -> preset, MA station lookup and playback | Wired into the binary; plays through MA (see doc/n-radio-presets.md) |
 | `crates/airplay` | AirPlay: runs shairport-sync, parses its metadata pipe, sans-IO session (start, track, cover, pause, end), cover decode | Takes the source, shows track and cover, feeds link rooms; tested with Music Assistant as sender against bookworm's i386 shairport-sync, not on the BM5 yet (doc/airplay.md) |
-| `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Plays from the live MA on a desktop; not wired into the binary yet |
+| `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Built into the binary as the BM5's MA player (N.MUSIC actor, see doc/n-music.md) |
 | `crates/settings` | The settings file (typed, versioned TOML, atomic save), the old environment variables as overrides, the Roles / source-name rules from MLConfig.dll, and the stock SETTINGS menu as data | Read at start, saved from the panel; the SETTINGS menu is drawn by `ui` |
 | `tools/bringup` | Hardware bring-up kit (M0): render benchmark (XRender / software blitter, EXA / NoAccel), panel probe, Sendspin player bench, PC2 smoke test, one-command run on the box | See `tools/bringup/README.md` |
 | `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
@@ -171,8 +171,8 @@ What neomaster does:
 - **Link** (sans-IO, like the protocol crates) owns the role's state machine and the mixer state,
   and maps intents and PC2 events to `Pc2Cmd`s and `AppEffect`s (play, stop, source key, channel,
   standby, volume). `Core::link_out` carries them out: `Play(AAux)` starts the A.AUX loop and any
-  other `Play` or `Stop` stops it; Music Assistant (N.MUSIC, N.RADIO) is not wired in yet and is
-  only logged. In the link source role A.AUX starts when the room's master connects us, since its
+  other `Play` or `Stop` stops it; `Play(NMusic)`, N.MUSIC's source keys and its release go to
+  Music Assistant (see [n-music.md](n-music.md)); N.RADIO is not wired in yet and is only logged. In the link source role A.AUX starts when the room's master connects us, since its
   audio reaches the room over the link.
 - **Role.** Settings › Roles › AUDIO MASTER (`roles.audio_master`), overridden for one run by
   `NEOMASTER_ML_ROLE` (the C++ neomaster's variable; `source_center` works) or `--role

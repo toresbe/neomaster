@@ -294,39 +294,42 @@ impl Ui {
     }
 
     fn playing_art_small(&mut self) -> Arc<Image> {
-        match self.playing {
-            Some(t) => {
-                let album = self.lib.tracks[t].album;
-                self.album_art(album)
-            }
-            None => self.assets.cover_small.clone(),
+        match self.now.as_ref().map(|n| n.cover) {
+            Some(c) if c != crate::Cover::default() => self.art(c),
+            _ => self.assets.cover_small.clone(),
         }
     }
 
-    fn album_of(&self, item: Item) -> Option<usize> {
+    /// The cover, artist and album shown for a selected item.
+    fn selection_of(&self, item: Item) -> Option<(crate::Cover, String, String)> {
+        let lib = &self.lib;
+        let album = |a: usize| (lib.albums[a].cover, lib.albums[a].artist.clone(), lib.albums[a].title.clone());
         match item {
-            Item::Album(a) => Some(a),
-            Item::Track(t) => Some(self.lib.tracks[t].album),
+            Item::Album(a) => Some(album(a)),
+            Item::Track(t) => match lib.tracks[t].album {
+                Some(a) => Some(album(a)),
+                None => Some((lib.tracks[t].cover, lib.tracks[t].artist.clone(), lib.tracks[t].title.clone())),
+            },
+            Item::Queued(q) => self.queue.get(q).map(|e| (e.cover, e.artist.clone(), e.title.clone())),
             _ => None,
         }
     }
 
-    fn is_playing(&self, item: Item) -> bool {
-        let Some(p) = self.playing else { return false };
+    pub(crate) fn is_playing(&self, item: Item) -> bool {
+        let Some(np) = self.now.as_ref() else { return false };
         match item {
-            Item::Track(t) => t == p,
-            Item::Album(a) => self.lib.tracks[p].album == a,
+            Item::Track(t) => np.uri.as_deref() == Some(self.lib.tracks[t].uri.as_str()),
+            Item::Album(a) => np.album_uri.as_deref() == Some(self.lib.albums[a].uri.as_str()),
+            Item::Queued(q) => self.queue.get(q).is_some_and(|e| e.uri.is_some() && e.uri == np.uri),
             _ => false,
         }
     }
 
     /// The selected album's cover, artist and album, between the arc and the list.
     fn paint_selection(&mut self, s: &mut Scene, item: Item, opacity: f32, placeholder: bool) {
-        let Some(album) = self.album_of(item) else { return };
-        let art = if placeholder { self.assets.cover_medium.clone() } else { self.album_art(album) };
+        let Some((cover, artist, title)) = self.selection_of(item) else { return };
+        let art = if placeholder { self.assets.cover_medium.clone() } else { self.art(cover) };
         s.image(&art, Rect::new(314, 330, COVER_BIG as u32, COVER_BIG as u32), opacity);
-        let artist = self.lib.artists[self.lib.albums[album].artist].name.clone();
-        let title = self.lib.albums[album].title.clone();
         let artist = fit(&mut self.font, &artist, SMALL as u16, 260.0);
         let title = fit(&mut self.font, &title, SMALL as u16, 260.0);
         s.text(323, 483, SMALL as u16, WHITE.with_opacity(opacity), Align::Left, artist);
@@ -433,7 +436,8 @@ impl Ui {
                     self.assets.cover_small.clone()
                 }
             } else {
-                self.album_art(album)
+                let cover = self.lib.albums[album].cover;
+                self.art(cover)
             };
             let r = rect_centred(cx, cy, size);
             s.image(&art, r, opacity);
@@ -460,19 +464,26 @@ impl Ui {
         if let Some(e) = self.external.clone() {
             return self.paint_external(s, &e, opacity);
         }
-        let Some(t) = self.playing else {
+        let Some(np) = self.now.clone() else {
             let cover = self.assets.cover_large.clone();
             s.image(&cover, Rect::new(55, 116, 512, 512), opacity);
             return;
         };
-        let album = self.lib.tracks[t].album;
-        let art = self.album_art(album);
+        let art = match &np.art {
+            Some(a) => a.clone(),
+            None if np.cover == crate::Cover::default() => self.assets.cover_large.clone(),
+            None => self.art(np.cover),
+        };
         s.image(&art, Rect::new(55, 116, 512, 512), opacity);
-        let title = self.lib.tracks[t].title.clone();
+        let title = np.title.clone();
         for (i, line) in wrap(&mut self.font, &title, NP_SIZE, 240.0, 3).into_iter().enumerate() {
             s.text(608, 382 + (i as f32 * 38.5).round() as i32, NP_SIZE, NP_GREY.with_opacity(opacity), Align::Left, line);
         }
-        let caption = format!("{} / {}", self.lib.artists[self.lib.albums[album].artist].name, self.lib.albums[album].title);
+        let caption = match (np.artist.is_empty(), np.album.is_empty()) {
+            (false, false) => format!("{} / {}", np.artist, np.album),
+            (false, true) => np.artist.clone(),
+            (true, _) => np.album.clone(),
+        };
         let caption = fit(&mut self.font, &caption, SMALL as u16, 512.0);
         s.text(55, 652, SMALL as u16, CAPTION_GREY.with_opacity(opacity), Align::Left, caption);
     }

@@ -18,6 +18,7 @@ use ui::{Effect, Ui};
 
 use crate::debug::{self, Inject, Tap};
 use crate::link::{self, AppEffect, Link, Outputs, Pc2Cmd};
+use crate::music::{MusicCmd, MusicEvent, MusicOut, NoMusic};
 use crate::radio_actor::{NoRadio, RadioCmd, RadioOut};
 use crate::settings_rt::{self, SettingsOut};
 
@@ -54,6 +55,8 @@ pub enum Event {
         number: u8,
         uri: String,
     },
+    /// From the N.MUSIC actor (Music Assistant): the library, what plays, the queue.
+    Music(MusicEvent),
     /// From a debug client (see [`crate::debug`]).
     Debug(Inject),
     Quit,
@@ -165,6 +168,23 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
     events: Option<mpsc::UnboundedSender<Event>>,
     /// The A.AUX card poll's card choice (settings `aux.card`).
     aux_card_choice: Option<tokio::sync::watch::Sender<String>>,
+    /// Where N.MUSIC's commands go (the actor in [`crate::music`]).
+    music_out: Box<dyn MusicOut>,
+    /// Music Assistant is configured (else the library is made up and nothing plays).
+    music_enabled: bool,
+    /// What the panel asked to play while N.MUSIC waits to be connected (link source role) or
+    /// selected; sent when it starts.
+    music_pending: Option<MusicCmd>,
+    /// N.MUSIC is the playing source.
+    music_playing: bool,
+    /// N.MUSIC was selected because Music Assistant started playing on the BM5 by itself (from
+    /// its app): it plays already, so selecting it sends nothing.
+    music_external: bool,
+    /// What N.MUSIC last played (album from the track, or the track), and whether N.RADIO has
+    /// replaced the queue since: then selecting N.MUSIC plays that again instead of resuming
+    /// the station.
+    music_last: Option<ui::PlayRequest>,
+    radio_took_queue: bool,
 }
 
 impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
@@ -200,6 +220,13 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             settings_out: None,
             events: None,
             aux_card_choice: None,
+            music_out: Box::new(NoMusic),
+            music_enabled: false,
+            music_pending: None,
+            music_playing: false,
+            music_external: false,
+            music_last: None,
+            radio_took_queue: false,
         }
     }
 
@@ -208,6 +235,141 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         self.tuner = tuner;
         self.radio_out = Box::new(out);
         self
+    }
+
+    /// N.MUSIC through Music Assistant: where its commands go.
+    pub fn with_music(mut self, out: impl MusicOut + 'static) -> Self {
+        self.music_out = Box::new(out);
+        self.music_enabled = true;
+        self
+    }
+
+    fn music_send(&mut self, cmd: MusicCmd) {
+        self.tap.emit("music_cmd", || json!({ "cmd": format!("{cmd:?}") }));
+        self.music_out.send(cmd);
+    }
+
+    /// The panel asked to play something: at once if N.MUSIC plays, else select N.MUSIC and
+    /// send it when the source starts (in the link source role, when the room connects us).
+    fn music_request(&mut self, cmd: MusicCmd, now: Time) {
+        if !self.music_enabled {
+            info!("{cmd:?} (no Music Assistant configured; nothing plays)");
+            return;
+        }
+        if self.link.playing() == Some(LocalSource::NMusic) {
+            self.music_send(cmd);
+            return;
+        }
+        self.music_pending = Some(cmd);
+        let out = self.link.select_source(LocalSource::NMusic, now);
+        self.link_out(out, now);
+    }
+
+    /// N.MUSIC became the playing source.
+    fn music_started(&mut self) {
+        self.music_playing = true;
+        let pending = self.music_pending.take();
+        if std::mem::take(&mut self.music_external) && pending.is_none() {
+            return;
+        }
+        let took = std::mem::take(&mut self.radio_took_queue);
+        if self.music_enabled {
+            let resume = match (took, self.music_last.clone()) {
+                (true, Some(last)) => MusicCmd::Play(last),
+                _ => MusicCmd::Resume,
+            };
+            self.music_send(pending.unwrap_or(resume));
+        }
+    }
+
+    /// N.MUSIC is no longer the source (another one, standby, or released by the room): pause
+    /// it, so it resumes where it was. N.RADIO plays on the same Music Assistant queue and
+    /// replaces it, so it needs no pause (which could arrive after the station started).
+    fn music_released(&mut self, next: Option<LocalSource>) {
+        self.music_pending = None;
+        self.music_external = false;
+        if std::mem::take(&mut self.music_playing) && next != Some(LocalSource::NRadio) && self.music_enabled {
+            self.music_send(MusicCmd::Pause);
+        }
+    }
+
+    /// A Beo4 key (ours, or a link room's) for N.MUSIC while it plays. Inferred from the
+    /// manual's Beo4 page: arrows up and down step tracks, left and right step albums.
+    fn music_key(&mut self, key: u8) {
+        use pc2::beo4;
+        let cmd = match key {
+            beo4::PLAY => Some(MusicCmd::Resume),
+            beo4::STOP => Some(MusicCmd::Pause),
+            beo4::ARROW_UP => Some(MusicCmd::Next),
+            beo4::ARROW_DOWN => Some(MusicCmd::Previous),
+            beo4::ARROW_RIGHT | beo4::ARROW_LEFT => {
+                let delta = if key == beo4::ARROW_RIGHT { 1 } else { -1 };
+                self.ui.album_step(delta).map(|uri| MusicCmd::Play(ui::PlayRequest { uri, start: None }))
+            }
+            _ => None,
+        };
+        match cmd {
+            Some(c) if self.music_enabled => self.music_send(c),
+            Some(c) => info!("N.MUSIC: Beo4 key {key:#04x} -> {c:?} (no Music Assistant configured)"),
+            None => info!("N.MUSIC: Beo4 key {key:#04x} does nothing"),
+        }
+    }
+
+    /// Something from the N.MUSIC actor. Returns whether the screen may have changed.
+    fn music_event(&mut self, ev: MusicEvent, now: Time) -> bool {
+        self.tap.emit("music", || json!({ "event": format!("{ev:?}") }));
+        match ev {
+            MusicEvent::Library(lib) => self.ui.set_library(*lib),
+            MusicEvent::NowPlaying(np) => {
+                let info = np.as_ref().map(|n| {
+                    let mut t = masterlink::TrackInfo::unknown();
+                    let set = |field: &mut String, v: &str| {
+                        if !v.is_empty() {
+                            *field = v.to_string();
+                        }
+                    };
+                    set(&mut t.title, &n.title);
+                    set(&mut t.artist, &n.artist);
+                    set(&mut t.album, &n.album);
+                    t
+                });
+                let changed = self.ui.now_playing().map(|n| (&n.title, &n.artist, &n.album))
+                    != np.as_ref().map(|n| (&n.title, &n.artist, &n.album));
+                if self.music_playing {
+                    if let Some(n) = np.as_ref().filter(|n| n.uri.is_some()) {
+                        self.music_last = Some(match &n.album_uri {
+                            Some(album) => ui::PlayRequest { uri: album.clone(), start: n.uri.clone() },
+                            None => ui::PlayRequest { uri: n.uri.clone().unwrap_or_default(), start: None },
+                        });
+                    }
+                }
+                self.ui.set_now_playing(np);
+                // link rooms' displays follow the track while we distribute N.MUSIC
+                if let (true, Some(info), true) = (changed, info, self.music_playing) {
+                    let out = self.link.track_info(info, now);
+                    self.link_out(out, now);
+                }
+            }
+            MusicEvent::Art { uri, image } => self.ui.set_now_playing_art(uri.as_deref(), image),
+            MusicEvent::Queue(q) => self.ui.set_queue(q),
+            MusicEvent::Stream(true) => {
+                // Started from Music Assistant's app with nothing local playing: as audio master,
+                // put N.MUSIC on the speakers. A link source cannot pick the room's source.
+                if !self.music_playing && self.link.playing().is_none() {
+                    if self.link.role() == LinkRole::AudioMaster {
+                        info!("N.MUSIC: Music Assistant started playing here; selecting N.MUSIC");
+                        self.music_external = true;
+                        let out = self.link.select_source(LocalSource::NMusic, now);
+                        self.link_out(out, now);
+                    } else {
+                        info!("N.MUSIC: Music Assistant started playing here; select N.MUSIC in the room to hear it");
+                    }
+                }
+                return false;
+            }
+            MusicEvent::Stream(false) => return false,
+        }
+        true
     }
 
     /// Send debug records here instead of to [`Tap::global`].
@@ -411,6 +573,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             return;
         }
         self.radio_playing = t.preset.number;
+        self.radio_took_queue = true;
         self.tap.emit("radio", || json!({ "preset": t.preset.number, "name": t.preset.name, "uri": t.preset.uri }));
         self.radio_out.send(RadioCmd::Play(t.preset));
         self.radio_save();
@@ -418,10 +581,18 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
 
     /// N.RADIO is no longer the source: stop its Music Assistant queue.
     fn radio_stop(&mut self) {
+        self.radio_stop_unless_music(false);
+    }
+
+    /// N.RADIO is no longer the source. When N.MUSIC follows, it takes over the same queue, so
+    /// no stop is sent: from another actor's connection it could land after N.MUSIC started.
+    fn radio_stop_unless_music(&mut self, music_next: bool) {
         if self.radio_playing != 0 {
             self.radio_playing = 0;
             self.tuner.stopped();
-            self.radio_out.send(RadioCmd::Stop);
+            if !music_next {
+                self.radio_out.send(RadioCmd::Stop);
+            }
         }
     }
 
@@ -477,7 +648,14 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                         }
                         self.radio_tune(tune);
                     } else {
-                        self.radio_stop();
+                        // N.MUSIC plays on the same queue and replaces the station: no stop
+                        // that could land after it starts
+                        self.radio_stop_unless_music(s == LocalSource::NMusic);
+                    }
+                    if s == LocalSource::NMusic {
+                        self.music_started();
+                    } else {
+                        self.music_released(Some(s));
                     }
                     if s != LocalSource::AirPlay {
                         self.drop_airplay(now);
@@ -496,6 +674,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     info!("stop playback");
                     self.radio_stop();
                     self.drop_airplay(now);
+                    self.music_released(None);
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                     // The stock UI blanks when its source stops and nothing local listens.
@@ -506,6 +685,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     let t = self.tuner.key(key, now);
                     self.radio_tune(t);
                 }
+                AppEffect::SourceKey { source: LocalSource::NMusic, key } => self.music_key(key),
                 AppEffect::SourceKey { source, key } => info!("{}: Beo4 key {key:#04x}", link::display_name(source)),
                 AppEffect::SourceChannel { source: LocalSource::NRadio, channel } => {
                     // When it came with the Play above, that preset is already playing and
@@ -548,13 +728,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
 
     fn effects(&mut self, fx: Vec<Effect>, now: Time) {
         for e in fx {
-            self.tap.emit("ui_effect", || {
-                json!({ "effect": match &e {
-                    Effect::Play(t) => format!("Play({} tracks)", t.len()),
-                    Effect::Enqueue(t) => format!("Enqueue({} tracks)", t.len()),
-                    e => format!("{e:?}"),
-                } })
-            });
+            self.tap.emit("ui_effect", || json!({ "effect": format!("{e:?}") }));
             match e {
                 Effect::Click => {
                     if let Some(r) = self.panel.click(now) {
@@ -570,11 +744,11 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     let r = self.panel.led_refresh();
                     self.panel_write(r);
                 }
-                // Blank-screen standby stops what plays locally. Music Assistant is not wired in
-                // yet; A.AUX is.
+                // Blank-screen standby stops what plays locally.
                 Effect::StopLocalPlayback => {
                     self.radio_stop();
                     self.drop_airplay(now);
+                    self.music_released(None);
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
                 }
@@ -589,10 +763,13 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     }
                     self.link_out(out, now);
                 }
-                Effect::Play(t) => info!("play {} track(s) (fake library; Music Assistant arrives in M3)", t.len()),
-                Effect::Enqueue(t) => info!("enqueue {} track(s)", t.len()),
                 Effect::SettingsOpened => self.refresh_facts(),
                 Effect::SettingsChanged(s) => self.settings_changed(*s),
+                Effect::Play(req) => self.music_request(MusicCmd::Play(req), now),
+                Effect::PlayQueueIndex(i) => self.music_request(MusicCmd::PlayIndex(i), now),
+                // Adding to the queue does not change the source.
+                Effect::Enqueue(uris) if self.music_enabled => self.music_send(MusicCmd::Enqueue(uris)),
+                Effect::Enqueue(uris) => info!("enqueue {uris:?} (no Music Assistant configured)"),
                 Effect::SelectSource(s) => {
                     info!("select source {s}");
                     if let Some(local) = self.local_source(s) {
@@ -703,6 +880,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 self.ui.set_facts(*f);
                 return self.ui.settings_open();
             }
+            Event::Music(m) => return self.music_event(m, now),
             Event::AirPlay(report) => self.airplay_report(report, now),
             Event::AirPlayCover(image) => {
                 if self.airplay.is_active() {
@@ -811,6 +989,8 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 "artist": self.airplay.track().artist,
                 "paused": self.airplay.is_paused(),
             })),
+            "music": self.ui.now_playing().map(|n| json!({ "title": n.title, "artist": n.artist, "playing": n.playing })),
+            "music_playing": self.music_playing,
         })
     }
 
@@ -1183,6 +1363,202 @@ mod tests {
         assert_eq!(*log.0.lock().unwrap(), vec![airplay::Effect::Drop]);
         assert!(core.ui.external().is_none());
         assert!(!core.airplay.is_active());
+    }
+
+    /// Run `events` through a core in `role` with the made-up library and N.MUSIC wired to a
+    /// channel; return the Music Assistant commands it sent.
+    async fn music_run(role: LinkRole, events: Vec<Event>) -> Vec<MusicCmd> {
+        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+        let (music_tx, mut music_rx) = mpsc::unbounded_channel::<MusicCmd>();
+        let link = Link::new(link::Config::new(role));
+        let core = Core::new(Ui::new(ui::fake::Library::generate()), NoPanel, NoAux, link, pc2_tx, scene_tx)
+            .with_tap(Tap::new())
+            .with_music(music_tx);
+        let (ev_tx, ev_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(core.run(ev_rx));
+        for e in events {
+            ev_tx.send(e).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        ev_tx.send(Event::Quit).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+        let mut cmds = vec![];
+        while let Ok(c) = music_rx.try_recv() {
+            cmds.push(c);
+        }
+        cmds
+    }
+
+    /// GO on the first album in ALBUMS (pointer at 70).
+    fn go_on_first_album() -> Vec<Event> {
+        vec![
+            Event::Debug(Inject::Panel { menu: 0, volume: 0, pointer: Some(70) }),
+            Event::Debug(Inject::Button { button: Button::Go, down: true }),
+            Event::Debug(Inject::Button { button: Button::Go, down: false }),
+        ]
+    }
+
+    fn first_album_uri() -> String {
+        let lib = ui::fake::Library::generate();
+        lib.albums[lib.albums_in_order()[0]].uri.clone()
+    }
+
+    fn ir(code: u8) -> Event {
+        Event::Pc2(pc2::Event::Beo4Key { kind: 0x01, code })
+    }
+
+    /// Audio master: GO plays the album at once (N.MUSIC goes on the speakers with it); the
+    /// Beo4's arrows step tracks and albums, STOP pauses, and another source pauses N.MUSIC.
+    #[tokio::test]
+    async fn audio_master_go_plays_and_beo4_steps() {
+        let n_music = masterlink::SourceMap::new(LinkRole::AudioMaster).beo4_key(LocalSource::NMusic);
+        let a_aux = masterlink::SourceMap::new(LinkRole::AudioMaster).beo4_key(LocalSource::AAux);
+        let mut ev = vec![Event::Pc2Connected];
+        ev.extend(go_on_first_album());
+        ev.extend([
+            ir(pc2::beo4::ARROW_UP),
+            ir(pc2::beo4::ARROW_DOWN),
+            ir(pc2::beo4::ARROW_RIGHT),
+            ir(pc2::beo4::STOP),
+            ir(pc2::beo4::PLAY),
+            ir(a_aux),
+            ir(n_music),
+        ]);
+        let cmds = music_run(LinkRole::AudioMaster, ev).await;
+        let lib = ui::fake::Library::generate();
+        let order = lib.albums_in_order();
+        let play = |a: usize| MusicCmd::Play(ui::PlayRequest { uri: lib.albums[a].uri.clone(), start: None });
+        assert_eq!(
+            cmds,
+            vec![
+                play(order[0]),
+                MusicCmd::Next,
+                MusicCmd::Previous,
+                play(order[1]), // the next album after the one playing
+                MusicCmd::Pause,
+                MusicCmd::Resume,
+                MusicCmd::Pause,  // A.AUX selected
+                MusicCmd::Resume, // N.MUSIC again: where it was
+            ]
+        );
+    }
+
+    /// Link source: GO asks the room for N.MUSIC (Beo4 key to the master) and plays only once
+    /// the master connects us; a link room's SOURCE_CONTROL arrow steps the track. The room
+    /// releasing us keeps it playing, since the panel picked it (link.rs); when only a room
+    /// asked for N.MUSIC, it resumes the queue and the release pauses it.
+    #[tokio::test]
+    async fn link_source_plays_when_connected_and_takes_room_keys() {
+        let connect = masterlink::Telegram::decode(&[
+            0xc2, 0xc1, 0x01, 0x0b, 0x7a, 0x00, 0x00, 0x6c, 0x0a, 0x01, 0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x01, 0xff, 0x02,
+            0x00,
+        ])
+        .unwrap()
+        .encode();
+        let room_key = masterlink::Telegram::decode(&[
+            0xc2, 0xc1, 0x01, 0x0a, 0x7a, 0x00, 0x00, 0x0d, 0x06, 0x01, 0x7a, 0x1e, 0x02, 0x01, 0x02, 0x00,
+        ])
+        .unwrap()
+        .encode();
+        let release =
+            masterlink::Telegram::decode(&[0xc2, 0xc1, 0x01, 0x0a, 0x7a, 0x00, 0x00, 0x11, 0x00, 0x02]).unwrap().encode();
+        let mut ev = vec![Event::Pc2Connected];
+        ev.extend(go_on_first_album());
+        let mut first = vec![Event::Pc2Connected];
+        first.extend(go_on_first_album());
+        let before = music_run(LinkRole::SourceCenter, first).await;
+        assert!(before.is_empty(), "nothing plays before the master connects us: {before:?}");
+        ev.extend([
+            Event::Debug(Inject::TelegramIn(connect.clone())),
+            Event::Debug(Inject::TelegramIn(room_key)),
+            Event::Debug(Inject::TelegramIn(release.clone())),
+        ]);
+        let cmds = music_run(LinkRole::SourceCenter, ev).await;
+        assert_eq!(cmds, vec![MusicCmd::Play(ui::PlayRequest { uri: first_album_uri(), start: None }), MusicCmd::Next]);
+        let cmds = music_run(
+            LinkRole::SourceCenter,
+            vec![Event::Pc2Connected, Event::Debug(Inject::TelegramIn(connect)), Event::Debug(Inject::TelegramIn(release))],
+        )
+        .await;
+        assert_eq!(cmds, vec![MusicCmd::Resume, MusicCmd::Pause]);
+    }
+
+    /// A Beo4 N.MUSIC with nothing asked on the panel resumes the queue; Music Assistant's
+    /// now-playing reaches the UI.
+    #[tokio::test]
+    async fn n_music_key_resumes_and_now_playing_shows() {
+        let n_music = masterlink::SourceMap::new(LinkRole::AudioMaster).beo4_key(LocalSource::NMusic);
+        let np = ui::NowPlaying { title: "Something".into(), artist: "The Beatles".into(), playing: true, ..Default::default() };
+        let cmds = music_run(
+            LinkRole::AudioMaster,
+            vec![Event::Pc2Connected, ir(n_music), Event::Music(MusicEvent::NowPlaying(Some(np)))],
+        )
+        .await;
+        assert_eq!(cmds, vec![MusicCmd::Resume]);
+    }
+
+    /// Music Assistant starting a stream on the BM5 by itself (its app) with nothing local
+    /// playing selects N.MUSIC as audio master, without sending it a play of its own.
+    #[tokio::test]
+    async fn stream_from_ma_selects_n_music_as_audio_master() {
+        let cmds = music_run(
+            LinkRole::AudioMaster,
+            vec![Event::Pc2Connected, Event::Music(MusicEvent::Stream(true)), ir(pc2::beo4::ARROW_UP)],
+        )
+        .await;
+        assert_eq!(cmds, vec![MusicCmd::Next], "the arrow works: N.MUSIC is the source now");
+    }
+
+    /// N.MUSIC and N.RADIO share the BM5's Music Assistant queue. Going from N.MUSIC to N.RADIO
+    /// sends N.MUSIC no pause (the station replaces it); going back sends N.RADIO no stop (it
+    /// could land after N.MUSIC started) and plays N.MUSIC's last album again from its track,
+    /// since resuming would resume the station.
+    #[tokio::test]
+    async fn n_music_and_n_radio_hand_the_queue_over() {
+        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+        let (music_tx, mut music_rx) = mpsc::unbounded_channel::<MusicCmd>();
+        let (radio_tx, mut radio_rx) = mpsc::unbounded_channel::<RadioCmd>();
+        let link = Link::new(link::Config::new(LinkRole::AudioMaster));
+        let core = Core::new(Ui::new(ui::fake::Library::generate()), NoPanel, NoAux, link, pc2_tx, scene_tx)
+            .with_tap(Tap::new())
+            .with_music(music_tx)
+            .with_radio(radio::Tuner::new(presets()), radio_tx);
+        let (ev_tx, ev_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(core.run(ev_rx));
+        let map = masterlink::SourceMap::new(LinkRole::AudioMaster);
+        let np = ui::NowPlaying {
+            title: "Track".into(),
+            uri: Some("library://track/7".into()),
+            album_uri: Some("library://album/3".into()),
+            playing: true,
+            ..Default::default()
+        };
+        let mut events = vec![Event::Pc2Connected];
+        events.extend(go_on_first_album());
+        events.extend([
+            Event::Music(MusicEvent::NowPlaying(Some(np))),
+            ir(map.beo4_key(LocalSource::NRadio)),
+            ir(map.beo4_key(LocalSource::NMusic)),
+        ]);
+        for e in events {
+            ev_tx.send(e).unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        ev_tx.send(Event::Quit).unwrap();
+        tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap();
+        let music: Vec<MusicCmd> = std::iter::from_fn(|| music_rx.try_recv().ok()).collect();
+        let radio: Vec<RadioCmd> = std::iter::from_fn(|| radio_rx.try_recv().ok()).collect();
+        assert_eq!(
+            music,
+            vec![
+                MusicCmd::Play(ui::PlayRequest { uri: first_album_uri(), start: None }),
+                MusicCmd::Play(ui::PlayRequest { uri: "library://album/3".into(), start: Some("library://track/7".into()) }),
+            ]
+        );
+        assert_eq!(plays(&radio), [12]);
+        assert!(!radio.contains(&RadioCmd::Stop), "{radio:?}");
     }
 
     /// The core with a debug tap: injected input takes the real path, and the stream shows it.

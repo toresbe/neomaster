@@ -323,9 +323,9 @@ pub struct PlayerQueue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueOption {
-    /// Replace the queue and play now.
+    /// Play now: insert at the current position and play, keeping the rest of the queue.
     Play,
-    /// Replace the whole queue.
+    /// Replace the whole queue and play it.
     Replace,
     /// Insert after the current item.
     Next,
@@ -344,6 +344,8 @@ pub struct NowPlaying {
     pub artist: String,
     pub album: String,
     pub uri: Option<String>,
+    /// The track's album (`library://album/…` when it is in the library).
+    pub album_uri: Option<String>,
     pub duration: Option<f64>,
     pub elapsed: Option<f64>,
     pub elapsed_sampled_at: Option<f64>,
@@ -373,6 +375,7 @@ impl NowPlaying {
                     np.title = t.name.clone();
                     np.artist = t.artists.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ");
                     np.album = t.album.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                    np.album_uri = t.album.as_ref().map(|a| a.uri.clone()).filter(|u| !u.is_empty());
                 } else {
                     np.title = mi.name().to_owned();
                 }

@@ -7,6 +7,7 @@
 mod core;
 mod debug;
 mod link;
+mod music;
 mod pc2_actor;
 mod radio_actor;
 mod settings_rt;
@@ -54,6 +55,10 @@ Debug connection (off by default; see doc/debug-connection.md):
                       read-only unless --debug-tcp-inject ($NEOMASTER_DEBUG_TCP_INJECT=1)
   --debug-record FILE record everything from start-up to a JSON Lines file
                       ($NEOMASTER_DEBUG_RECORD)
+
+  MA_URL, MA_TOKEN  Music Assistant: browse its library, play on the BM5's built-in Sendspin
+              player (see doc/n-music.md for the other NEOMASTER_* player settings); without
+              them the panel browses a made-up library and nothing plays
 
   NEOMASTER_STOCK_ASSETS=DIR  with --sim: draw with the BM5's own font and textures, read from
               DIR (its Windows disk, e.g. /mnt/A); without it the UI draws look-alikes
@@ -135,9 +140,11 @@ fn headless(startup: Startup, debug_cfg: &debug::Config) -> Result<(), Box<dyn s
     impl core::PanelOut for NoPanel {
         fn write(&mut self, _: [u8; 2]) {}
     }
-    let ui = ui::Ui::new(ui::fake::Library::generate());
+    let (music, ma_queue) = music::spawn(&rt, false, &startup.settings.music_assistant, event_tx.clone());
+    let lib = if music.is_some() { ui::Library::empty() } else { ui::fake::Library::generate() };
+    let ui = ui::Ui::new(lib);
     let link = Link::new(link::Config::from_settings(&startup.settings));
-    let (tuner, radio_tx) = radio_actor::spawn(&rt, &startup.settings.music_assistant, event_tx.clone());
+    let (tuner, radio_tx) = radio_actor::spawn(&rt, &startup.settings.music_assistant, ma_queue, event_tx.clone());
     let aux_out = a_aux::loopback::Loopback::new(settings_rt::loopback_config(&startup.settings.aux));
     log::info!("Running headless as {role:?}; Ctrl-C to quit");
     let airplay: Box<dyn core::AirPlayOut> = match core::start_airplay(event_tx.clone(), &startup.settings.aux.playback) {
@@ -145,6 +152,10 @@ fn headless(startup: Startup, debug_cfg: &debug::Config) -> Result<(), Box<dyn s
         None => Box::new(core::NoAirPlay),
     };
     let core = startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx).with_radio(tuner, radio_tx);
+    let core = match music {
+        Some(m) => core.with_music(m),
+        None => core,
+    };
     rt.block_on(core.with_airplay(airplay).run(event_rx));
     Ok(())
 }
