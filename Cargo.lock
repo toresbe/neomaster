@@ -182,6 +182,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "bringup"
+version = "0.1.0"
+dependencies = [
+ "bs5-panel",
+ "env_logger",
+ "libc",
+ "log",
+ "ma-client",
+ "nusb",
+ "player",
+ "render",
+ "serde_json",
+ "tokio",
+ "ui",
+ "x11rb",
+]
+
+[[package]]
 name = "bs5-panel"
 version = "0.1.0"
 
