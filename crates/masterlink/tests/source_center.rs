@@ -112,3 +112,24 @@ fn idle_status_only_after_delay_and_without_local_playback() {
     sc.tick(&mut host, at(2.1));
     assert_eq!(host.sent.len(), 1); // idle SOURCE_STATUS 47
 }
+
+/// SOURCE_CONNECT short form: byte 2 is a channel/track number (decompiled, 0x42339c4). The
+/// captured requests carry 00, so they ask for none; a number is passed to the host.
+#[test]
+fn source_connect_passes_the_channel_number() {
+    use masterlink::protocol::source_connect::{parse_request, Request};
+    let captured = [0x00, 0x00, 0x00, 0x00, 0x02, 0x02, 0x01, 0xff, 0x02, 0x00];
+    assert_eq!(parse_request(&captured), Request::default());
+    let mut with_channel = captured;
+    with_channel[2] = 0x05;
+    with_channel[8] = 0x0c;
+    assert_eq!(parse_request(&with_channel), Request { channel: Some(5), timer_play: true, ..Default::default() });
+
+    let mut host = mlgw_host();
+    let mut sc = SourceCenter::new();
+    let mut req = vec![0xc2, 0xc1, 0x01, 0x0b, 0xa1, 0x00, 0x00, 0x6c, 0x0a, 0x01];
+    req.extend_from_slice(&with_channel);
+    sc.handle(&mut host, &incoming(&req), at(0.0));
+    assert_eq!(host.channels, vec![(0xa1, 5)]);
+    assert_eq!(host.started, vec![0xa1]);
+}

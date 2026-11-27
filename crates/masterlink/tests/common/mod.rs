@@ -23,6 +23,7 @@ pub struct FakeHost {
     pub standby_seen: bool,
     pub started: Vec<u8>,
     pub keys: Vec<u8>,
+    pub channels: Vec<(u8, u8)>,
     pub stops: u32,
     pub lock_requests: u32,
     pub lock_releases: u32,
@@ -47,6 +48,9 @@ impl Host for FakeHost {
     }
     fn source_key(&mut self, _src: u8, key: u8) {
         self.keys.push(key);
+    }
+    fn source_channel(&mut self, src: u8, channel: u8) {
+        self.channels.push((src, channel));
     }
     fn link_standby(&mut self) {
         self.standby_seen = true;

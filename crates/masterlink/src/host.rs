@@ -20,6 +20,9 @@ pub trait Host {
     fn stop_source(&mut self);
     /// A Beo4 key aimed at our source from a link room (SOURCE_CONTROL telegram).
     fn source_key(&mut self, _src: u8, _key: u8) {}
+    /// A link room asked for source `src` starting at channel/track `channel` (the number in a
+    /// SOURCE_CONNECT request, e.g. a radio preset). Called right after `start_source`.
+    fn source_channel(&mut self, _src: u8, _channel: u8) {}
     /// Someone sent "all standby" on the link.
     fn link_standby(&mut self) {}
     /// Ask the PC2 firmware for the Masterlink bus lock (host command 24). The firmware runs the
@@ -44,6 +47,11 @@ pub enum Effect {
     SourceKey {
         src: u8,
         key: u8,
+    },
+    /// A link room asked to start [`Effect::StartSource`]'s source at this channel/track.
+    SourceChannel {
+        src: u8,
+        channel: u8,
     },
     LinkStandby,
     RequestBusLock,
@@ -86,6 +94,9 @@ impl<F: FnMut(u8) -> bool> Host for Effects<F> {
     }
     fn source_key(&mut self, src: u8, key: u8) {
         self.out.push(Effect::SourceKey { src, key });
+    }
+    fn source_channel(&mut self, src: u8, channel: u8) {
+        self.out.push(Effect::SourceChannel { src, channel });
     }
     fn link_standby(&mut self) {
         self.out.push(Effect::LinkStandby);

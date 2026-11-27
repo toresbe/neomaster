@@ -497,10 +497,59 @@ pub mod lock_manager {
 
 /// SOURCE_CONNECT (0x6C). Decompiled: FUN_042338d8 builds the STATUS (subtype 8) with a one- or
 /// two-byte payload.
+///
+/// The REQUEST (subtype 1) asks the source center to distribute `dest_src`. Decompiled: its
+/// handler is TPCSLhandler_HandleSourceConnect (0x42339c4), which logs the long form as
+/// "RX:SL_CONNECT_COMMAND: SlConnectType=..,ScreenFormat=..". Two forms:
+///
+/// - **short** (size < 11), what a BeoSound 3000 audio master sends (observed:
+///   `00 00 00 00 02 02 01 ff 02 00`). BeoIpcML reads only byte 2, a channel/track number (taken
+///   when it is not 00 or ff and the device accepts numbers, +0x46; stored as the source's
+///   channel/track, SOURCE_STATUS byte 9), and byte 8, how the source was activated: 0c = a timer
+///   ("SL-ACTIVATION TIMER-PLAY"), anything else "SL-ACTIVATION WE DONT KNOW". The other bytes are
+///   not read; TODO: their meaning.
+/// - **long** (size >= 11): byte 10 is the SlConnectType. Type 4 is handled: byte 7 is the
+///   requested screen format (mapped by 0x42342dc into SOURCE_STATUS bytes 13 and 24) and, if the
+///   payload has 16 bytes, byte 15 selects a format code that goes back in the STATUS. Type 2 is
+///   logged as "THIS IS NOT IMPLEMENTED YET". Seen only in the code, not on the wire.
+///
+/// The STATUS answer (subtype 8, from 0x42338d8 / 0x423394c) is `01` for the short form and
+/// `01 <format code>` for the long one, with src_src = the source.
 pub mod source_connect {
+    pub const SUBTYPE_REQUEST: u8 = 1;
     pub const SUBTYPE_STATUS: u8 = 8;
-    /// inferred from the flow; always 01 in captures
+    /// inferred from the flow; always 01 in captures (both STATUS forms start with it)
     pub const CONNECTED: u8 = 0x01;
+    /// Short-form byte 8: the source was started by a timer (B&O: "SL-ACTIVATION TIMER-PLAY")
+    pub const ACTIVATION_TIMER_PLAY: u8 = 0x0c;
+    /// A payload shorter than this is the short form
+    pub const LONG_FORM_MIN_LEN: usize = 11;
+    /// Long-form byte 10: the SlConnectType BeoIpcML handles
+    pub const SL_CONNECT_TYPE_SCREEN: u8 = 4;
+
+    /// What a REQUEST asks for, as far as BeoIpcML reads it.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Request {
+        /// Short form, byte 2: a channel or track number to start at (None when 00 or ff)
+        pub channel: Option<u8>,
+        /// Short form, byte 8 == 0c: started by a timer
+        pub timer_play: bool,
+        /// Long form, byte 10
+        pub sl_connect_type: Option<u8>,
+        /// Long form, byte 7: the requested screen format
+        pub screen_format: Option<u8>,
+    }
+
+    pub fn parse_request(p: &[u8]) -> Request {
+        if p.len() >= LONG_FORM_MIN_LEN {
+            return Request { sl_connect_type: Some(p[10]), screen_format: Some(p[7]), ..Default::default() };
+        }
+        Request {
+            channel: p.get(2).copied().filter(|&c| c != 0x00 && c != 0xff),
+            timer_play: p.get(8) == Some(&ACTIVATION_TIMER_PLAY),
+            ..Default::default()
+        }
+    }
 }
 
 /// IR_SIMUL_LOW (0x20): a Beo4 key pressed on another node: `00 01 ff ff <key>`. Observed (as
