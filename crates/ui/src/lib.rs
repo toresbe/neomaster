@@ -245,6 +245,8 @@ pub struct Ui {
     queue: Vec<QueueEntry>,
     now: Option<NowPlaying>,
     external: Option<External>,
+    /// A source with nothing to show but its name (A.AUX): now-playing shows only that.
+    plain_source: Option<String>,
     volume: u8,
     volume_shown_until: Time,
     /// Long GO: the context menu, open while GO is held.
@@ -288,6 +290,7 @@ impl Ui {
             queue: Vec::new(),
             now: None,
             external: None,
+            plain_source: None,
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
             context: None,
@@ -556,6 +559,16 @@ impl Ui {
     /// Show what an outside source (AirPlay) plays, or `None` to go back to the library's track.
     pub fn set_external(&mut self, external: Option<External>) {
         self.external = external;
+    }
+
+    /// A source that has no track, cover or sender (A.AUX, a line in): now-playing shows just its
+    /// name. `None` goes back to the library's track (or the outside source's).
+    pub fn set_plain_source(&mut self, name: Option<&str>) {
+        self.plain_source = name.map(str::to_owned);
+    }
+
+    pub fn plain_source(&self) -> Option<&str> {
+        self.plain_source.as_deref()
     }
 
     pub fn external(&self) -> Option<&External> {
@@ -1038,6 +1051,42 @@ mod tests {
         assert!(drawn(&scene));
         ui.set_external(None);
         assert!(!drawn(&ui.scene(ms(20_000))));
+    }
+
+    #[test]
+    fn plain_source_shows_only_its_name_on_now_playing() {
+        let mut ui = ui_at(5);
+        let texts_of = |s: &Scene| -> Vec<String> {
+            s.items
+                .iter()
+                .filter_map(|p| match p {
+                    render::Primitive::Text { text, .. } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let images = |s: &Scene| s.items.iter().filter(|p| matches!(p, render::Primitive::Image(_))).count();
+        ui.set_now_playing(Some(NowPlaying {
+            title: "Some Track".into(),
+            artist: "Someone".into(),
+            playing: true,
+            ..Default::default()
+        }));
+        let before = ui.scene(ms(10_000));
+        assert!(texts_of(&before).contains(&"Some Track".to_string()));
+        ui.set_plain_source(Some("A.AUX"));
+        let scene = ui.scene(ms(20_000));
+        let texts = texts_of(&scene);
+        assert!(texts.contains(&"A.AUX".to_string()), "{texts:?}");
+        // no cover, no title, no caption
+        assert!(images(&scene) < images(&before));
+        assert!(!texts.iter().any(|t| t.contains("Some")), "{texts:?}");
+        assert_eq!(texts.len(), texts_of(&before).len() - 1, "{texts:?}");
+        // it wins over an outside source's view
+        ui.set_external(Some(External { source: "AIRPLAY".into(), title: "x".into(), ..Default::default() }));
+        assert!(!texts_of(&ui.scene(ms(30_000))).contains(&"x".to_string()));
+        ui.set_plain_source(None);
+        assert!(texts_of(&ui.scene(ms(40_000))).contains(&"x".to_string()));
     }
 
     #[test]

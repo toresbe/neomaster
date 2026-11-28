@@ -461,6 +461,11 @@ impl Ui {
     }
 
     fn paint_now_playing(&mut self, s: &mut Scene, opacity: f32) {
+        if let Some(name) = self.plain_source.clone() {
+            // A line-in source has no cover or track: just its name, where a title goes.
+            s.text(608, 382, NP_SIZE, NP_GREY.with_opacity(opacity), Align::Left, name);
+            return;
+        }
         if let Some(e) = self.external.clone() {
             return self.paint_external(s, &e, opacity);
         }
