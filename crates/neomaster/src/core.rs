@@ -495,6 +495,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     // shairport-sync plays at once; A.AUX's loop must not hold the output.
                     let fx = self.aux.deselect();
                     self.aux_effects(fx);
+                    self.ui.set_plain_source(None);
                     self.ui.set_external(Some(ui::External {
                         source: AIRPLAY.into(),
                         from: sender.name.clone().unwrap_or_default(),
@@ -660,6 +661,8 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                     if s != LocalSource::AirPlay {
                         self.drop_airplay(now);
                     }
+                    // A.AUX is a line in: now-playing shows only its name.
+                    self.ui.set_plain_source((s == LocalSource::AAux).then_some("A.AUX"));
                     let fx = if s == LocalSource::AAux {
                         if self.aux.card().is_none() {
                             info!("A.AUX: waiting for a USB sound card (\"USB Audio CODEC\")");
@@ -672,6 +675,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 }
                 AppEffect::Stop => {
                     info!("stop playback");
+                    self.ui.set_plain_source(None);
                     self.radio_stop();
                     self.drop_airplay(now);
                     self.music_released(None);
@@ -776,6 +780,8 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                         // Picking a source on the panel ends AirPlay at once, even where the new
                         // source waits for the room's master to connect it.
                         self.drop_airplay(now);
+                        // Show A.AUX at once, also where the room's master connects it later.
+                        self.ui.set_plain_source((local == LocalSource::AAux).then_some("A.AUX"));
                         let out = self.link.select_source(local, now);
                         self.link_out(out, now);
                     }
@@ -1363,6 +1369,25 @@ mod tests {
         assert_eq!(*log.0.lock().unwrap(), vec![airplay::Effect::Drop]);
         assert!(core.ui.external().is_none());
         assert!(!core.airplay.is_active());
+    }
+
+    /// A.AUX picked on the panel: now-playing shows just "A.AUX", in both roles; another
+    /// source puts the normal view back.
+    #[test]
+    fn a_aux_shows_only_its_name() {
+        for role in [LinkRole::AudioMaster, LinkRole::SourceCenter] {
+            let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+            let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
+            let link = Link::new(link::Config::new(role));
+            let mut core =
+                Core::new(Ui::new(ui::fake::Library::generate()), NoPanel, NoAux, link, pc2_tx, scene_tx).with_tap(Tap::new());
+            let t = Duration::from_secs(1);
+            core.event(Event::Pc2Connected, t);
+            core.effects(vec![Effect::SelectSource("A.AUX")], t);
+            assert_eq!(core.ui.plain_source(), Some("A.AUX"), "{role:?}");
+            core.effects(vec![Effect::SelectSource("N.MUSIC")], t);
+            assert_eq!(core.ui.plain_source(), None, "{role:?}");
+        }
     }
 
     /// Run `events` through a core in `role` with the made-up library and N.MUSIC wired to a
