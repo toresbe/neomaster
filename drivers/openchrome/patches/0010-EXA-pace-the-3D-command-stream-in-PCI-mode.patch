@@ -1,0 +1,60 @@
+From 18d24f84b8d172a98208187502031d4239ca0d35 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 10/11] EXA: pace the 3D command stream in PCI mode
+
+Broken: without DRM the 3D command stream is written to TRANSPACE by
+MMIO. Writes made while the virtual queue or the command regulator is
+still busy are silently lost.
+
+Found: a droptest (N back-to-back Add composites of 0x01 onto 0) gave 4
+instead of 200, roughly one composite in fifty drawn. An experimental
+build that waited for the queue before each 3D segment gave exactly N
+for N = 1..250.
+
+Fix: before each 3D segment, wait until the virtual queue is empty
+(VIA_VR_QUEUE_EMPTY) and the command regulator is idle
+(VIA_CMD_RGTR_BUSY clear), bounded by MAXLOOP.
+---
+ src/via_exa.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/via_exa.c b/src/via_exa.c
+index 93f198a..6e8d6b2 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -74,6 +74,23 @@ viaDumpDMA(ViaCommandBuffer *cb)
+ enum { VIA_ENG_NONE, VIA_ENG_2D, VIA_ENG_3D };
+ static int viaLastEngine = VIA_ENG_NONE;
+ 
++/*
++ * Wait until the virtual queue has drained and the command regulator is
++ * idle. 3D commands written to TRANSPACE while it is still busy are lost:
++ * without this, only about one in fifty back-to-back composites was drawn.
++ */
++static void
++via3DWaitQueue(ScrnInfoPtr pScrn)
++{
++    VIAPtr pVia = VIAPTR(pScrn);
++    unsigned loop = 0;
++
++    while (!(VIAGETREG(VIA_REG_STATUS) & VIA_VR_QUEUE_EMPTY) &&
++           (loop++ < MAXLOOP)) ;
++    while ((VIAGETREG(VIA_REG_STATUS) & VIA_CMD_RGTR_BUSY) &&
++           (loop++ < MAXLOOP)) ;
++}
++
+ static void
+ viaSwitchEngine(ScrnInfoPtr pScrn, int engine)
+ {
+@@ -99,6 +116,7 @@ viaFlushPCI(ViaCommandBuffer *cb)
+             if (++bp == endp)
+                 return;
+             viaSwitchEngine(cb->pScrn, VIA_ENG_3D);
++            via3DWaitQueue(cb->pScrn);
+             VIASETREG(VIA_REG_TRANSET, transSetting = *bp++);
+             while (bp < endp) {
+                 if ((transSetting != HC_ParaType_CmdVdata)
+-- 
+2.53.0
+

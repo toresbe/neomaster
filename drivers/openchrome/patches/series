@@ -1,3 +1,11 @@
 0001-LVDS-name-the-native-panel-mode-generated-without-ED.patch
 0002-EXA-fall-back-to-software-for-composites-the-3D-engi.patch
 0003-EXA-accelerate-affine-transformed-and-bilinear-compo.patch
+0004-EXA-accept-offscreen-pixmaps-as-3D-sources-without-K.patch
+0005-EXA-don-t-let-EXA-s-pixmaps-overlap-the-driver-s-own.patch
+0006-EXA-H2-write-destination-alpha-clip-untransformed-Re.patch
+0007-3D-saturate-composite-colour-and-alpha.patch
+0008-EXA-wait-for-engine-idle-when-PCI-command-stream-swi.patch
+0009-3D-break-nearest-filter-ties-like-pixman.patch
+0010-EXA-pace-the-3D-command-stream-in-PCI-mode.patch
+0011-EXA-no-bilinear-filtering-of-transformed-repeating-p.patch

@@ -1,0 +1,71 @@
+From ba1674de78992a8125866ddc1c656332bbb332e6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 08/11] EXA: wait for engine idle when PCI command stream
+ switches 2D/3D
+
+Broken: without DRM the command buffer is written straight to the engine
+registers by viaFlushPCI. 2D commands wait only for the 2D engine and 3D
+(HALCYON_HEADER2) commands don't wait at all, so a composite could read a
+destination a blit was still writing, and a blit could start while the 3D
+engine was still drawing.
+
+Found: xformtest's first composite after the large blit that fills the
+destination gave wrong output, and only that one.
+
+Fix: track which engine the stream last fed and call viaAccelSync() to
+wait for both engines whenever it switches.
+---
+ src/via_exa.c | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/src/via_exa.c b/src/via_exa.c
+index f7e86fe..93f198a 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -63,6 +63,26 @@ viaDumpDMA(ViaCommandBuffer *cb)
+     ErrorF("\n");
+ }
+ 
++/*
++ * Without DRM the command buffer is written straight to the engine
++ * registers. The 2D register writes below only wait for the 2D engine, and
++ * the 3D (HALCYON_HEADER2) stream doesn't wait at all, so a composite could
++ * read a destination the 2D engine was still writing (and a blit could
++ * start while the 3D engine was still drawing). Wait for both engines to go
++ * idle whenever the stream switches between them.
++ */
++enum { VIA_ENG_NONE, VIA_ENG_2D, VIA_ENG_3D };
++static int viaLastEngine = VIA_ENG_NONE;
++
++static void
++viaSwitchEngine(ScrnInfoPtr pScrn, int engine)
++{
++    if (viaLastEngine != engine) {
++        viaAccelSync(pScrn);
++        viaLastEngine = engine;
++    }
++}
++
+ void
+ viaFlushPCI(ViaCommandBuffer *cb)
+ {
+@@ -78,6 +98,7 @@ viaFlushPCI(ViaCommandBuffer *cb)
+         if (*bp == HALCYON_HEADER2) {
+             if (++bp == endp)
+                 return;
++            viaSwitchEngine(cb->pScrn, VIA_ENG_3D);
+             VIASETREG(VIA_REG_TRANSET, transSetting = *bp++);
+             while (bp < endp) {
+                 if ((transSetting != HC_ParaType_CmdVdata)
+@@ -88,6 +109,7 @@ viaFlushPCI(ViaCommandBuffer *cb)
+             }
+         } else if ((*bp & HALCYON_HEADER1MASK) == HALCYON_HEADER1) {
+ 
++            viaSwitchEngine(cb->pScrn, VIA_ENG_2D);
+             while (bp < endp) {
+                 if (*bp == HALCYON_HEADER2)
+                     break;
+-- 
+2.53.0
+

@@ -6,7 +6,8 @@ on the BM5 under bookworm's Xorg 21.1, so patch 0001 is needed to get X
 running at all. Neomaster's XRender backend
 (`crates/render/src/xrender.rs`) scales cover art and rotates the pointer beam
 with Render picture transforms and bilinear filtering. The stock driver gets
-those wrong. Background and the wider survey are in
+those wrong, and under UMS it never used the 3D engine for Render at all.
+With the full series, Render composites run on the 3D engine. Background and the wider survey are in
 [OpenChrome: unused acceleration on the CX700](https://claude.ai/artifact/KMuJdTNGui9KrX2vXBB76f).
 
 | Patch | What it does | Default |
@@ -14,30 +15,131 @@ those wrong. Background and the wider survey are in
 | `0001` | Names the panel's native mode, which the driver generates itself because the BM5's panel has no EDID. Without a name, Xorg 21.1 segfaults in `xf86ProbeOutputModes` | Always on |
 | `0002` | EXA composite falls back to software for anything the 3D engine can't draw: picture transforms, convolution filters, RepeatPad/Reflect, repeating pictures that aren't a power of two in size, and masks without a drawable | Always on |
 | `0003` | Affine transforms (scale, rotate, skew) with nearest or bilinear filtering on the UniChrome 3D engine | Off; enable with `Option "ExaTransform" "true"` |
+| `0004` | Under UMS, recognises offscreen pixmaps as video memory (`exaGetPixmapOffset`; the old check only knew the KMS front buffer, so every composite fell back to software). Lets `MigrationHeuristic` in xorg.conf replace the forced "greedy" | Always on; set `Option "MigrationHeuristic" "always"` |
+| `0005` | Under UMS, gives EXA its own block of video memory. EXA pixmaps used to overlap the command queue, sync marker, cursors and Xv buffers | Always on |
+| `0006` | H2 composites write destination alpha. Untransformed sources and masks without repeat are clipped to the picture, because xserver 21 no longer clips to the source drawable | Always on |
+| `0007` | Saturates colour and alpha in the blend unit (Add wrapped around) | Always on |
+| `0008` | Waits for both engines to go idle when the PCI command stream switches between 2D and 3D | Always on |
+| `0009` | Breaks nearest-filter ties like pixman (2:1 downscales picked the other texel) | Always on |
+| `0010` | Waits for the command queue to drain before each 3D segment in PCI mode. Without it, about 49 of 50 back-to-back composites were lost | Always on |
+| `0011` | Sends transformed repeating pictures with the bilinear filter to software (the texture unit doesn't wrap bilinear samples) | Always on |
 
 **Without 0002,** a transformed source over 400 pixels is drawn as an
 unscaled crop of the image. Patches 0001 and 0002 make neomaster render
-correctly, with software scaling. Patch 0003 moves the scaling to the GPU.
+correctly, with software scaling. Patches 0004-0011 make composites reach
+the 3D engine under UMS and draw correctly there. Patch 0003 moves the
+scaling to the GPU as well.
+
+Each patch's commit message says what was broken, how it was found, and the
+fix. Debug-only builds (logging `PrepareComposite` calls and the VRAM layout)
+were used along the way and are not included.
 
 ## Status
 
-0001 runs on the BM5 (2026-11-28, as Debian package `1:0.6.0-5+nm1`). X comes
-up in UMS with EXA enabled, and FP-1 runs at 1024x768. 0002 and 0003 haven't
-run on hardware yet. Offline checks so far:
+The full series runs on the BM5 (2026-11-28, as Debian package
+`1:0.6.0-5+nm8`) with `MigrationHeuristic "always"` and `ExaTransform "true"`.
+X runs in UMS with EXA. The log shows
+`[EXA] Offscreen pixmaps at 0x00641000-0x03800000 (50940 kB)` and
+`EXA transformed and bilinear composites enabled`. Neomaster's Render use
+goes to the 3D engine: the Add composites of 1024x320 and 90x768 and the
+transformed bilinear 640x96.
 
-- All three patches apply to the 0.6.0 tarball and build against Xorg 21.1
-  without new warnings.
-- `test/run_harness.sh` drives `via_3d.c` without hardware. Untransformed
-  composites produce byte-for-byte the same command stream as before. The
-  bilinear filter bits and transformed texture coordinates come out as
-  expected. The clipped polygon for pictures without repeat covers exactly
-  the right pixels.
+`test/xformtest.c` compares X Render output with in-process pixman 0.42.2
+over 318 cases (identity, 2x scale, 512->160 downscale, 17° rotation, 0.3
+skew; nearest and bilinear; Over, Add and Src; with and without an a8 mask;
+opaque, alpha and repeating sources). Results on the BM5 with
+`MigrationHeuristic "always"`:
 
-Hardware facts the code relies on, all still to be confirmed with rendercheck:
+- **`ExaTransform` off:** 0 of 318 cases differ from pixman. Untransformed
+  composites run on the 3D engine and are exact.
+- **`ExaTransform` on:** no gross errors. 88 cases exceed the test's
+  threshold (more than 2 levels off outside the edge band), all at precision
+  level:
+  - bilinear interiors are at most 13 levels off (the hardware's filter
+    weights have less precision);
+  - nearest with rotation, skew or a non-integer scale picks a neighbouring
+    texel for under 1% of pixels (texture coordinate precision);
+  - the bilinear edge band differs by up to half a pixel, as described under
+    "How 0003 works".
+- **droptest** (N back-to-back Add composites of 0x01): exact for N = 1..250.
 
-- Filter bits in HTXnTB (manual Part 2 p.77) and the Mesa unichrome driver's use of them.
-- GL-style sampling at pixel centres, so no half-texel offset is applied.
-- Clamp wrap mode.
+Timings on the BM5's C7, in ms per composite:
+
+| Composite | 3D engine (`ExaTransform` on) | Software (`ExaTransform` off) | pixman in-process |
+| --- | --- | --- | --- |
+| 512->160 bilinear Over | 0.64 | 1.36 | 1.29 |
+| 512->160 nearest Over | 0.29 | 0.60 | 0.55 |
+| 512->160 bilinear Src | 1.40 | 1.27 | 1.21 |
+| 256x256 untransformed Over | 0.55 | 0.55 | |
+
+Transformed Over runs about twice as fast as software. Transformed Src still
+goes to software in both cases (0003 doesn't accept it for pictures without
+repeat). The untransformed Over is on the 3D engine in both columns, at
+about 120 Mpixel/s; in-process pixman takes 0.94 ms for it.
+
+The offline harness (`test/run_harness.sh`) was written for 0003 and hasn't
+been re-run on the full series. 0007 changes the blend setup words, so its
+"untransformed: identical" check should be expected to report a difference
+now; xformtest on hardware is the reference.
+
+## Enabling on the BM5
+
+Add both options to the Device section that X already uses. On the BM5
+that is `Device "Card0"` in `/etc/X11/xorg.conf`; a separate file in
+`xorg.conf.d` isn't picked up when xorg.conf already binds a Device to the
+Screen.
+
+```
+Section "Device"
+    Identifier "Card0"
+    Driver     "openchrome"
+    # ...existing options...
+    Option     "MigrationHeuristic" "always"
+    Option     "ExaTransform" "true"
+EndSection
+```
+
+- `MigrationHeuristic "always"` needs 0004. Stock openchrome forces
+  "greedy", and in xserver 21.1's classic EXA, greedy never moves pixmaps
+  into video memory, so the 3D engine never sees a Render source.
+- `ExaTransform "true"` enables 0003. Without it, transformed and bilinear
+  composites go to software and the rest still uses the 3D engine.
+
+Check the result with
+`grep -E "EXA|Migration|transformed" /var/log/Xorg.0.log`.
+
+**Rolling back:** the BM5 keeps a copy of the earlier config as
+`/etc/X11/xorg.conf.pre-exatransform`. Remove the two options (or copy that
+file back) and restart X for software rendering with the patched driver.
+To drop the patches too, run
+`sudo apt-get install --reinstall xserver-xorg-video-openchrome` and restart
+X.
+
+## Why acceleration never worked before
+
+Stock openchrome 0.6.0 under UMS (no openchrome KMS module, as on the BM5)
+never ran a Render composite on the 3D engine:
+
+1. The driver forced `MigrationHeuristic "greedy"` and ignored the
+   xorg.conf setting. Greedy never migrates pixmaps to video memory on
+   xserver 21.1, so EXA fell back to software (0004).
+2. Even with pixmaps in video memory, `viaExaIsOffscreen` only recognised
+   the KMS front buffer object, so every pixmap still looked like system
+   memory (0004).
+
+That fallback hid a stack of bugs in the UMS 3D path, all of which showed up
+once composites reached the engine:
+
+3. EXA's pixmap area overlapped the command queue and the driver's other
+   buffers, so composites drew in the wrong place or not at all (0005).
+4. Destination alpha was never written, and RepeatNone sources weren't
+   clipped now that xserver 21 doesn't clip to the source drawable (0006).
+5. Add wasn't saturated (0007).
+6. The PCI command path didn't wait between 2D blits and 3D composites
+   (0008), and dropped 3D commands written while the queue was busy (0010).
+
+Single composites can look right while bursts drop commands, so run the
+droptest as well as the pixman comparison after any change.
 
 ## The start-up crash (0001)
 
@@ -90,52 +192,42 @@ sudo dpkg -i ../xserver-xorg-video-openchrome_*+neomaster*_i386.deb
 Debian's source already carries the GCC 10 `-fno-common` fix. If you build
 the plain upstream 0.6.0 tarball instead, configure it with `CFLAGS=-fcommon`.
 
-To enable 0003, add `/etc/X11/xorg.conf.d/20-openchrome.conf`:
+Then enable the options as described under "Enabling on the BM5".
 
-```
-Section "Device"
-    Identifier "CX700"
-    Driver     "openchrome"
-    Option     "ExaTransform" "true"
-EndSection
-```
+## Testing on hardware
 
-To roll back, delete that file. To remove the patches as well, run
-`sudo apt-get install --reinstall xserver-xorg-video-openchrome`.
+Run tests over ssh with the panel UI stopped: a 3D engine hang freezes the
+box.
 
-## Hardware test plan
+1. **Driver mode.** `grep -E "EXA|Migration|transformed" /var/log/Xorg.0.log`
+   should show the offscreen pixmap range, `MigrationHeuristic "always"` and
+   "[EXA] Enabled EXA acceleration".
+2. **xformtest.** Build it on the BM5:
 
-1. **Confirm the driver mode.** `grep -E "EXA|DRI|KMS|transformed" /var/log/Xorg.0.log`
-   should show "[EXA] Enabled EXA acceleration" and "EXA transformed and
-   bilinear composites enabled/disabled". The driver must be in UMS, which it
-   is when the out-of-tree openchrome KMS module isn't loaded.
-2. **Run rendercheck three times:** stock package, patched with `ExaTransform`
-   off, and patched with it on. Install it with `sudo apt-get install rendercheck`;
-   if it isn't packaged, build it from xorg/test/rendercheck. Run:
-   `rendercheck -t tscoords,tmcoords,composite,cacomposite,repeat,blend -f a8r8g8b8,x8r8g8b8,a8`.
-   Expected results:
-   - Stock fails the transform tests (`tscoords`, `tmcoords`).
-   - Patched with the option off passes everything.
-   - Patched with the option on passes everything, except possibly
-     single-pixel edge differences on bilinear tests (see above).
-3. **Visual check in neomaster:** run it with each setting and compare cover
-   edges, scaled covers and the rotating pointer beam. Rendering should match
-   the `ExaTransform` off case, which is pixman.
-4. **Speed:** compare neomaster's frame time while scrolling covers, with the
-   option off and on.
-5. **Stability:** a hang in the 3D engine freezes the box. Run step 2 first,
-   over ssh, with the panel UI stopped.
+   ```sh
+   sudo apt-get install gcc libx11-dev libxrender-dev libpixman-1-dev pkg-config
+   gcc -O2 -Wall -o xformtest xformtest.c $(pkg-config --cflags --libs x11 xrender pixman-1) -lm
+   ```
+
+   Then run `DISPLAY=:0 ./xformtest` and `DISPLAY=:0 ./xformtest --droptest`,
+   with `ExaTransform` off and on. Expect the results under "Status". If the
+   output is identical with the option on and off, nothing reached the 3D
+   engine.
+3. **rendercheck** (`-t tscoords,tmcoords,composite,cacomposite,repeat,blend`)
+   is still useful for untransformed operators. Its transform tests use Src,
+   so they never exercise 0003.
 
 ## Upstream
 
 The X driver has no active upstream. Kevin Brace's main branch was last
-touched in 2023, and the freedesktop repos are archived. Patches 0001 and
-0002 are plain bug fixes suitable for Debian (salsa.debian.org/xorg-team/driver/xserver-xorg-video-openchrome)
+touched in 2023, and the freedesktop repos are archived. Patches 0001,
+0002 and 0004-0011 are plain bug fixes suitable for Debian (salsa.debian.org/xorg-team/driver/xserver-xorg-video-openchrome)
 and the openchrome-devel list. 0001 deserves a Debian bug, since stock
-bookworm openchrome can't start on any panel without EDID. 0003 should
-follow once rendercheck passes on hardware.
+bookworm openchrome can't start on any panel without EDID. 0003 has now
+been checked against pixman on hardware and can follow.
 
-`test/` holds the offline harness. Run
+`test/` holds the offline harness and `xformtest.c` (see "Testing on
+hardware"). For the harness, run
 `test/run_harness.sh <unpatched-0.6.0-tree> <patched-tree>` with
 `xserver-xorg-dev` and `libpixman-1-dev` installed. Both trees must be
 configured first, so that `config.h` exists.
