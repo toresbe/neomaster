@@ -49,6 +49,8 @@ pub enum MusicCmd {
     Resume,
     /// STOP, or N.MUSIC released: pause, so it resumes where it was.
     Pause,
+    /// GO on the now-playing view.
+    PlayPause,
     Next,
     Previous,
 }
@@ -502,6 +504,7 @@ impl Actor {
             MusicCmd::Resume => c.play(&q).await,
             MusicCmd::Pause => c.pause(&q).await,
             MusicCmd::Next => c.next(&q).await,
+            MusicCmd::PlayPause => c.play_pause(&q).await,
             MusicCmd::Previous => c.previous(&q).await,
         };
         match r {
