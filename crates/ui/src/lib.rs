@@ -13,12 +13,13 @@ pub mod fake;
 pub mod idle;
 pub mod library;
 pub mod settings_menu;
+pub mod wheel;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use bs5_panel::{Button, Input, COUNTS_PER_STEP};
+use bs5_panel::{Button, Input};
 use render::{Color, Image, Scene};
 
 pub use assets::Assets;
@@ -258,7 +259,8 @@ pub struct Ui {
     /// The beam's angle as drawn (radians, up is positive), easing towards the pointer's.
     beam: f32,
     beam_glow: arc::BeamGlow,
-    menu_counts: i32,
+    /// The menu wheel's part-turn (stock units, see [`wheel`]).
+    menu_wheel: wheel::MenuWheel,
     queue: Vec<QueueEntry>,
     now: Option<NowPlaying>,
     external: Option<External>,
@@ -305,7 +307,7 @@ impl Ui {
             pointer_raw: 64,
             beam: arc::angle(64),
             beam_glow: arc::BeamGlow::default(),
-            menu_counts: 0,
+            menu_wheel: wheel::MenuWheel::default(),
             queue: Vec::new(),
             now: None,
             external: None,
@@ -523,9 +525,7 @@ impl Ui {
                 }
             }
             Input::MenuWheel(counts) => {
-                self.menu_counts += counts;
-                let steps = self.menu_counts / COUNTS_PER_STEP;
-                self.menu_counts -= steps * COUNTS_PER_STEP;
+                let steps = self.wheel_steps(counts, now);
                 if steps != 0 {
                     fx.extend(self.step(steps));
                     self.last_step = now;
@@ -687,6 +687,18 @@ impl Ui {
         }
         level.cursor = new;
         vec![Effect::Click]
+    }
+
+    /// Items to move for `counts` of the menu wheel, the stock way: scaled by a gain that grows
+    /// with how fast the list is already moving, in whole rows (or covers).
+    pub(crate) fn wheel_steps(&mut self, counts: i32, now: Time) -> i32 {
+        let covers = self.context.is_none() && self.zone().kind == ViewKind::Covers;
+        let item = if covers { wheel::COVER_UNITS } else { wheel::ROW_UNITS };
+        let behind = match self.context {
+            Some(c) => c as f32 - self.context_scroll,
+            None => self.level().map_or(0.0, |l| l.cursor as f32 - l.scroll),
+        };
+        self.menu_wheel.turn(counts, now, behind * item as f32, item)
     }
 
     /// The now-playing view is showing (pointer at either end, or the idle return).
@@ -1086,6 +1098,7 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bs5_panel::COUNTS_PER_STEP as STEP;
 
     fn ms(n: u64) -> Time {
         Duration::from_millis(n)
@@ -1193,17 +1206,17 @@ mod tests {
     #[test]
     fn wheel_counts_become_steps_with_one_click_each() {
         let mut ui = ui_at(76);
-        assert_eq!(ui.input(Input::MenuWheel(10), ms(1)), vec![]);
-        assert_eq!(ui.input(Input::MenuWheel(10), ms(2)), vec![Effect::Click]); // 15 counts = 1 step
+        assert_eq!(ui.input(Input::MenuWheel(40), ms(1)), vec![]);
+        assert_eq!(ui.input(Input::MenuWheel(30), ms(400)), vec![Effect::Click]); // 70 counts = 1 row, slowly
         assert_eq!(ui.level().unwrap().cursor, 1);
-        ui.input(Input::MenuWheel(-45), ms(3)); // clamps at the top
+        ui.input(Input::MenuWheel(-3 * STEP), ms(3)); // clamps at the top
         assert_eq!(ui.level().unwrap().cursor, 0);
     }
 
     #[test]
     fn left_drills_right_backs_and_zones_keep_their_place() {
         let mut ui = ui_at(76);
-        ui.input(Input::MenuWheel(30), ms(1));
+        ui.input(Input::MenuWheel(2 * STEP), ms(1));
         ui.input(Input::Pressed(Button::Left), ms(2)); // artist -> albums
         ui.input(Input::Pressed(Button::Left), ms(3)); // album -> tracks
         assert!(matches!(ui.current_item(), Some(Item::Track(_))));
@@ -1234,7 +1247,7 @@ mod tests {
     fn go_on_a_track_in_an_album_plays_the_album_from_it() {
         let mut ui = ui_at(70); // ALBUMS
         ui.input(Input::Pressed(Button::Left), ms(1)); // album -> its tracks
-        ui.input(Input::MenuWheel(15), ms(2)); // the second track
+        ui.input(Input::MenuWheel(STEP), ms(2)); // the second track
         ui.input(Input::Pressed(Button::Go), ms(3));
         let fx = ui.input(Input::Released(Button::Go), ms(4));
         let lib = Library::generate();
@@ -1249,7 +1262,7 @@ mod tests {
     #[test]
     fn a_new_library_keeps_every_list_in_place() {
         let mut ui = ui_at(76); // ARTISTS
-        ui.input(Input::MenuWheel(45), ms(1));
+        ui.input(Input::MenuWheel(3 * STEP), ms(1));
         ui.input(Input::Pressed(Button::Left), ms(2)); // artist -> albums
         let before = ui.current_item().map(|i| ui.uri_of(i).unwrap().to_owned());
         // the same library with one artist more, sorted first
@@ -1284,7 +1297,7 @@ mod tests {
         let mut ui = ui_at(30); // QUEUE
         let e = |t: &str| QueueEntry { title: t.into(), uri: Some(format!("x://{t}")), ..Default::default() };
         ui.set_queue(vec![e("one"), e("two"), e("three")]);
-        ui.input(Input::MenuWheel(30), ms(1));
+        ui.input(Input::MenuWheel(2 * STEP), ms(1));
         ui.input(Input::Pressed(Button::Go), ms(2));
         assert_eq!(ui.input(Input::Released(Button::Go), ms(3)), vec![Effect::PlayQueueIndex(2)]);
     }
@@ -1312,7 +1325,7 @@ mod tests {
         let mut ui = ui_at(62);
         ui.input(Input::Pressed(Button::Go), ms(100));
         ui.input(Input::LongPress(Button::Go), ms(900));
-        ui.input(Input::MenuWheel(-15), ms(950)); // to BLUE
+        ui.input(Input::MenuWheel(-STEP), ms(950)); // to BLUE
         let fx = ui.input(Input::Released(Button::Go), ms(1000));
         assert!(fx.is_empty());
     }
@@ -1332,7 +1345,7 @@ mod tests {
         assert_eq!(ui.tick(ms(1_800_000)), vec![Effect::StopLocalPlayback, Effect::Backlight(false)]);
         assert!(ui.scene(ms(1_800_001)).items.is_empty());
         assert_eq!(ui.tick(ms(1_810_000)), vec![Effect::LedRefresh]);
-        assert_eq!(ui.input(Input::MenuWheel(15), ms(1_815_000)), vec![Effect::Backlight(true)]);
+        assert_eq!(ui.input(Input::MenuWheel(STEP), ms(1_815_000)), vec![Effect::Backlight(true)]);
         assert_eq!(ui.zone().kind, ViewKind::NowPlaying);
         ui.input(Input::Pointer(77), ms(1_815_100));
         assert_eq!(ui.level().unwrap().cursor, 0); // the waking wheel turn did not scroll
@@ -1392,7 +1405,7 @@ mod tests {
             ui.scene(ms(17 * f));
         }
         assert_eq!(ui.next_frame(ms(3100)), None);
-        ui.input(Input::MenuWheel(75), ms(3101));
+        ui.input(Input::MenuWheel(5 * STEP), ms(3101));
         assert!(ui.next_frame(ms(3101)).is_some());
         for f in 0..60 {
             ui.scene(ms(3101 + 17 * f));
@@ -1477,14 +1490,14 @@ mod tests {
     #[test]
     fn go_on_settings_swaps_the_arc() {
         let mut ui = ui_at(92); // MODE
-        ui.input(Input::MenuWheel(45), ms(1)); // to SETTINGS
+        ui.input(Input::MenuWheel(3 * STEP), ms(1)); // to SETTINGS
         ui.input(Input::Pressed(Button::Go), ms(2));
         let fx = ui.input(Input::Released(Button::Go), ms(3));
         assert_eq!(fx, vec![Effect::SettingsOpened, Effect::SelectSource("SETTINGS")]);
         ui.input(Input::Pointer(75), ms(4));
         assert_eq!(ui.zone().name, "SYSTEM SETTINGS");
         ui.input(Input::Pointer(92), ms(5));
-        ui.input(Input::MenuWheel(-45), ms(6)); // back to N.MUSIC
+        ui.input(Input::MenuWheel(-3 * STEP), ms(6)); // back to N.MUSIC
         ui.input(Input::Pressed(Button::Go), ms(7));
         ui.input(Input::Released(Button::Go), ms(8));
         ui.input(Input::Pointer(76), ms(9));

@@ -4,7 +4,7 @@
 //!
 //! | Direction | Byte | Meaning |
 //! |---|---|---|
-//! | IN, EP 0x81 | 0 | menu wheel, signed delta (+1 clockwise); about 15 counts per UI step |
+//! | IN, EP 0x81 | 0 | menu wheel, signed delta (+1 clockwise); the stock UI scales it by speed (see `ui::wheel`) |
 //! | IN | 1 | volume wheel, signed delta |
 //! | IN | 2 | pointer arc, absolute 0-127 |
 //! | IN | 3 | buttons: 0x40 GO, 0x20 LEFT, 0x10 RIGHT |
@@ -13,8 +13,9 @@
 //! | OUT | 1 | IR flags: c0 (both captured blanks ended on c0) |
 //!
 //! The panel has no detents and no long press in hardware: [`Decoder`] times holds, and
-//! [`Output`] coalesces clicks to at most one per frame. Unlike the stock UI, the first wheel
-//! tick after a direction change is not dropped. (The old C++ panel.cpp used `&&` where it meant
+//! [`Output`] coalesces clicks to at most one per frame. Wheel deltas pass through raw; the
+//! UI turns them into rows the stock way (`ui::wheel`), which also drops a part-turn when the
+//! direction changes, the "first tick after a direction change" seen over VNC. (The old C++ panel.cpp used `&&` where it meant
 //! `&` when reading the buttons, so any button read as all three.)
 
 use std::time::Duration;
@@ -31,8 +32,9 @@ pub const BUTTON_GO: u8 = 0x40;
 pub const BUTTON_LEFT: u8 = 0x20;
 pub const BUTTON_RIGHT: u8 = 0x10;
 
-/// Raw counts per UI step on the menu wheel (measured: about 15).
-pub const COUNTS_PER_STEP: i32 = 15;
+/// Menu-wheel counts for one list row on a slow turn: the stock UI moves 1.5 units per count
+/// (more when the list is already moving fast) and a row is 105 units. See `ui::wheel`.
+pub const COUNTS_PER_STEP: i32 = 70;
 /// Highest pointer arc position.
 pub const POINTER_MAX: u8 = 127;
 
