@@ -1,0 +1,954 @@
+From 617b0ea3624b15398c60b782999f6fd9ff45332b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 23:43:26 +0000
+Subject: [PATCH 3/3] EXA: accelerate affine-transformed and bilinear
+ composites (H2 3D engine)
+
+The UniChrome texture unit can filter bilinearly (HTXnTB, sub-address
+0x78, was always written as 0) and takes a texture coordinate per vertex,
+so scaled, rotated and skewed Render composites can run on the 3D engine
+instead of in software.
+
+- via3DEmitQuad computes the source position as an affine function of
+  the destination position for each texture and derives the texture
+  coordinates from it. Untransformed output is byte-for-byte what it was.
+- A transformed picture without repeat is transparent outside its bounds,
+  but the texture unit can only clamp, and only at the power-of-two
+  texture size. So the quad is clipped (Sutherland-Hodgman) to the part
+  whose samples all fall inside the picture, half a texel in for bilinear,
+  and drawn as a triangle fan. That is only correct for operators where a
+  transparent source or mask leaves the destination unchanged (Over,
+  OverReverse, Atop, Xor, Add); others fall back to software. Compared
+  with pixman, the outermost half pixel of a bilinear-filtered picture is
+  left out instead of being blended towards transparent.
+- New setTexTransform hook sets the transform, the nearest/bilinear filter
+  and the clip size for a texture unit; setTexture resets them.
+- viaExaPictureSupported() accepts affine transforms with the nearest or
+  bilinear filter on pixmaps up to 2048x2048 when the new ExaTransform
+  option is on.
+- Only the H2 (UniChrome/UniChrome Pro) path is changed; H6 still falls
+  back to software for transforms.
+
+Off by default until it has been checked with rendercheck on hardware.
+---
+ man/openchrome.4   | 255 ++++++++++++++++++++++++++++++++++++++++
+ man/openchrome.man |   7 ++
+ src/via_3d.c       | 285 +++++++++++++++++++++++++++++++++------------
+ src/via_3d.h       |   8 ++
+ src/via_driver.c   |   9 ++
+ src/via_driver.h   |   5 +-
+ src/via_exa.c      |  68 ++++++++++-
+ src/via_exa_h2.c   |  28 ++++-
+ src/via_exa_h6.c   |   4 +-
+ 9 files changed, 582 insertions(+), 87 deletions(-)
+ create mode 100644 man/openchrome.4
+
+diff --git a/man/openchrome.4 b/man/openchrome.4
+new file mode 100644
+index 0000000..6bb85eb
+--- /dev/null
++++ b/man/openchrome.4
+@@ -0,0 +1,255 @@
++.\" Shorthand for double quote that works everywhere,
++.\" also within other double quotes:
++.ds q \N'34'
++.TH OPENCHROME 4 "xf86-video-openchrome 0.6.0" "X Version 11"
++.SH NAME
++openchrome \- video driver for VIA Unichromes
++.SH SYNOPSIS
++.nf
++.B "Section \*qDevice\*q"
++.BI "  Identifier \*q" devname \*q
++.B  "  Driver \*qopenchrome\*q"
++\ \ ...
++.B EndSection
++.fi
++
++.SH DESCRIPTION
++.B openchrome
++is an Xorg driver for VIA chipsets that have an integrated
++Unichrome graphics engine.
++.PP
++The
++.B openchrome
++driver supports the following chipsets: CLE266, KM400/KN400/KM400A/P4M800,
++CN400/PM800/PN800/PM880, K8M800, CN700/VM800/P4M800Pro, CX700, P4M890, K8M890,
++P4M900/VN896/CN896, VX800, VX855 and VX900.
++The driver includes 2D acceleration and Xv video overlay extensions.
++Flat panel, TV, and VGA outputs are supported, depending on the hardware
++configuration.
++.PP
++3D direct rendering is available using experimental drivers from Mesa
++(www.mesa3d.org).  There is also an XvMC client library for hardware
++acceleration of MPEG1/MPEG2 decoding (not available on the KM/N400)
++that uses the Direct Rendering Infrastructure (DRI).
++The XvMC client library implements a non-standard
++"VLD" extension to the XvMC standard.  The current Direct Rendering
++Manager (DRM) kernel module is available at dri.sourceforge.net.
++.PP
++The driver supports free modes for Unichrome Pros (K8M800/K8N800, PM800/PN800,
++and CN400).  For plain Unichromes (CLE266, KM400/KN400), it currently supports
++only a limited number of dotclocks, so if you are using X modelines you
++must make sure that the dotclock is one of those supported.  Supported
++dotclocks on plain Unichromes are currently (in MHz): 25.2, 25.312,
++26.591, 31.5, 31.704, 32.663, 33.750, 35.5, 36.0, 39.822, 40.0, 41.164,
++46.981, 49.5, 50.0, 56.3, 57.284, 64.995, 65.0, 65.028, 74.480,
++75.0, 78.8, 81.613, 94.5, 108.0, 108.28, 122.0, 122.726, 135.0,
++148.5, 155.8, 157.5, 161.793, 162.0, 175.5, 189.0, 202.5, 204.8,
++218.3, 229.5.  On top of this, bandwidth restrictions apply for both
++Unichromes and Unichrome Pros.
++.PP
++.SH CONFIGURATION DETAILS
++Please refer to xorg.conf(5) for general configuration
++details.  This section only covers configuration details specific to this
++driver.
++.PP
++The following driver
++.B options
++are supported:
++.TP
++.BI "Option \*qAccelMethod\*q  \*q" string \*q
++The driver supports "XAA" and "EXA" acceleration methods.  The default
++method is XAA, since EXA is still experimental.  Contrary to XAA, EXA
++implements acceleration for screen uploads and downloads (if DRI is
++enabled) and for the Render/Composite extension.
++.TP
++.BI "Option \*qActiveDevice\*q  \*q" string \*q
++Specifies the active device combination.  Any string containing "CRT",
++"LCD", "DFP", "TV" should be possible. "CRT" represents anything that
++is connected to the VGA port, "LCD" is for laptop panels (not TFT screens
++attached to the VGA port), "DFP" is for screens connected to the DVI port,
++"TV" is self-explanatory.
++The default is to use what is detected.  The driver is currently unable
++to use LCD and TV simultaneously, and will favour the LCD.  The DVI port is
++not properly probed and needs to be enabled with this option.
++.TP
++.BI "Option \*qAGPMem\*q  \*q" integer \*q
++Sets the amount of AGP memory that is allocated at X server startup.
++The allocated memory will be "integer" kB.  This AGP memory is used for
++the AGP command buffer (if the option "EnableAGPDMA" is set to "true"), for
++DRI textures, and for the EXA scratch area.  The driver will allocate at
++least one system page of AGP memory, or \-\- if the AGP command buffer is
++used \-\- at least 2 MB plus one system page.  If there is no room for the
++EXA scratch area in AGP space, it will be allocated from VRAM.  If there is
++no room for DRI textures, they will be allocated from the DRI part of
++VRAM (see the option "MaxDRIMem").  The default amount of AGP is
++32768 kB.  Note that the AGP aperture set in the BIOS must be able
++to accommodate the amount of AGP memory specified here.  Otherwise no
++AGP memory will be available.  It is safe to set a very large AGP
++aperture in the BIOS.
++.TP
++.BI "Option \*qCenter\*q  \*q" boolean \*q
++Enables image centering on DVI displays.  The default is disabled.
++.TP
++.BI "Option \*qDisableIRQ\*q  \*q" boolean \*q
++Disables the vertical blank IRQ.  This is a workaround for some mainboards
++that have problems with IRQs coming from the Unichrome engine.  With IRQs
++disabled, DRI clients have no way to synchronize their drawing to Vblank.
++(IRQ is disabled by default on the KM400 and K8M800 chipsets.)
++.TP
++.BI "Option \*qDisableVQ\*q  \*q" boolean \*q
++Disables the use of the virtual command queue.  The queue is enabled
++by default.
++.TP
++.BI "Option \*qEnableAGPDMA\*q  \*q" boolean \*q
++Enables the AGP DMA functionality in DRM.  This requires that DRI is enabled
++and will force 2D and 3D acceleration to use AGP DMA.  The XvMC DRI
++client will also make use of this on the CLE266 to consume much less CPU.
++(This option is enabled by default, except on the K8M890 and P4M900.) 
++.TP
++.BI "Option \*qExaNoComposite\*q  \*q" boolean \*q
++If EXA is enabled (using the option "AccelMethod"), this option enables
++acceleration of compositing.  Since EXA, and in particular its composite
++acceleration, is still experimental, this is a way to disable a misbehaving
++composite acceleration.
++.TP
++.BI "Option \*qExaTransform\*q  \*q" boolean \*q
++Accelerate Render composites whose source or mask has an affine transform
++(scaling, rotation, skew), with nearest or bilinear filtering, on the 3D
++engine. Projective transforms and pictures larger than 2048x2048 still fall
++back to software. Only implemented for the UniChrome and UniChrome Pro
++(not Chrome9) 3D engine. Default: disabled.
++.TP
++.BI "Option \*qExaScratchSize\*q  \*q" integer \*q
++Sets the size of the EXA scratch area to "integer" kB.  This area is
++used by EXA as a last place to look for available space for pixmaps.
++Too little space will slow compositing down.  This option should be set
++to the size of the largest pixmap used.  If you have a screen width of
++over 1024 pixels and use 24 bpp, set this to 8192.  Otherwise you can
++leave this at the default 4096.  The space will be allocated from AGP
++memory if available, otherwise from VRAM.
++.TP
++.BI "Option \*qLCDDualEdge\*q  \*q" boolean \*q
++Enables the use of dual-edge mode to set the LCD.  The default is disabled.
++.TP
++.BI "Option \*qMaxDRIMem\*q  \*q" integer \*q
++Sets the maximum amount of VRAM memory allocated for DRI clients to
++"integer" kB.  Normally DRI clients  get half the available VRAM size,
++but in some cases it may make sense to limit this amount.  For example,
++if you are using a composite manager and you want to give as much memory
++as possible to the EXA pixmap storage area.
++.TP
++.BI "Option \*qMigrationHeuristic\*q  \*q" string \*q
++Sets the heuristic for EXA pixmap migration.  This is an EXA core
++option, and starting from Xorg server version 1.3.0 this defaults to
++"always".  The openchrome driver performs best with "greedy", so you
++should really add this option to your configuration file.  The third
++possibility is "smart".
++.TP
++.BI "Option \*qNoAccel\*q  \*q" boolean \*q
++Disables the use of hardware acceleration.  Acceleration is enabled
++by default.
++.TP
++.BI "Option \*qNoAGPFor2D\*q  \*q" boolean \*q
++Disables the use of AGP DMA for 2D acceleration, even when AGP DMA is
++enabled.  The default is enabled.
++.TP
++.BI "Option \*qNoXVDMA\*q  \*q" boolean \*q
++If DRI is enabled, Xv normally uses PCI DMA to transfer video images
++from system to frame-buffer memory.  This is somewhat slower than
++direct copies due to the limitations of the PCI bus, but on the other
++hand it decreases CPU usage significantly, particularly on computers
++with fast processors.  Some video players are buggy and will display
++rendering artifacts when PCI DMA is used.  If you experience this,
++or don't want your PCI bus to be stressed with Xv images, set this
++option to "true".  This option has no effect when DRI is not enabled.
++.TP
++.BI "Option \*qPanelSize\*q  \*q" string \*q
++Specifies the size (width x height) of the LCD panel attached to the
++system.  The sizes 640x480, 800x600, 1024x768, 1280x1024, and 1400x1050
++are supported.
++.TP
++.BI "Option \*qRotationType\*q  \*q" string \*q
++Enabled rotation by using RandR. The driver only support unaccelerated
++RandR rotations "SWRandR". Hardware rotations "HWRandR" is currently 
++unimplemented.
++.TP
++.BI "Option \*qRotate\*q  \*q" string \*q
++Rotates the display either clockwise ("CW"), counterclockwise ("CCW") and
++upside-down ("UD"). Rotation is only supported unaccelerated.  Adding 
++option "Rotate", enables RandR rotation feature.  The RandR allows 
++clients to dynamically change X screens.
++.TP
++.BI "Option \*qShadowFB\*q  \*q" boolean \*q
++Enables the use of a shadow frame buffer.  This is required when
++rotating the display, but otherwise defaults to disabled.
++.TP
++.BI "Option \*qSWCursor\*q  \*q" boolean \*q
++Enables the use of a software cursor.  The default is disabled:
++the hardware cursor is used.
++.TP
++.BI "Option \*qTVDeflicker\*q  \*q" integer \*q
++Specifies the deflicker setting for TV output.  Valid values are "0", "1",
++and "2".  Here 0 means no deflicker, 1 means 1:1:1 deflicker, and 2 means
++1:2:1 deflicker.
++.TP
++.BI "Option \*qTVDotCrawl\*q  \*q" boolean \*q
++Enables dot-crawl suppression.  The default is disabled.
++.TP
++.BI "Option \*qTVOutput\*q  \*q" string \*q
++Specifies which TV output to use.  The driver supports "S-Video",
++"Composite", "SC", "RGB", and "YCbCr" outputs.  Note that on some
++EPIA boards the composite-video port is shared with audio-out and
++is selected via a jumper.
++.TP
++.BI "Option \*qTVPort\*q  \*q" string \*q
++Specifies TV port.  The driver currently supports "DVP0", "DVP1", 
++"DFPHigh" and "DFPLow" ports.
++.TP
++.BI "Option \*qTVType\*q  \*q" string \*q
++Specifies TV output format.  The driver currently supports "NTSC" and
++"PAL" timings only.
++.TP
++.BI "Option \*qVBEModes\*q  \*q" boolean \*q
++Enables the use of VBE BIOS calls for setting the display mode.  This mimics
++the behaviour of the vesa driver but still provides acceleration and
++other features.  This option may be used if your hardware works with
++the vesa driver but not with the openchrome driver.  It may not work
++on 64-bit systems.  Using "VBEModes" may speed up driver acceleration
++significantly due to a more aggressive hardware setting, particularly
++on systems with low memory bandwidth.  Your refresh rate may be limited
++to 60 Hz on some systems.
++.TP
++.BI "Option \*qVBESaveRestore\*q  \*q" boolean \*q
++Enables the use of VBE BIOS calls for saving and restoring the display state
++when the X server is launched.  This can be extremely slow on some hardware,
++and the system may appear to have locked for 10 seconds or so.  The default
++is to use the driver builtin function.  This option only works if option
++"VBEModes" is enabled.
++.TP
++.BI "Option \*qVideoRAM\*q  \*q" integer \*q
++Overrides the VideoRAM autodetection.  This should never be needed.
++.PP 
++.SH "TV ENCODERS"
++Unichromes tend to be paired with several different TV encoders.
++.TP
++.BI "VIA Technologies VT1621"
++Still untested, as no combination with a Unichrome is known or available.
++Supports the following normal modes: "640x480" and "800x600".  Use
++"640x480Over" and "800x600Over" for vertical overscan.  These modes
++are made available by the driver; modelines provided in xorg.conf
++will be ignored.
++.TP
++.BI "VIA Technologies VT1622, VT1622A, VT1623"
++Supports the following modes: "640x480", "800x600", "1024x768",
++"848x480", "720x480" (NTSC only) and "720x576" (PAL only).  Use
++"640x480Over", "800x600Over", "1024x768Over", "848x480Over",
++"720x480Over" (NTSC) and "720x576Over" (PAL) for vertical overscan.
++The modes "720x480Noscale" (NTSC) and "720x576Noscale" (PAL) (available
++on VT1622 only) provide cleaner TV output (unscaled with only minimal
++overscan).  These modes are made available by the driver; modelines
++provided in xorg.conf will be ignored.
++
++.SH "SEE ALSO"
++Xorg(1), xorg.conf(5), Xserver(1), X(7), EXA(5), Xv(5)
++.SH AUTHORS
++Authors include: ...
+diff --git a/man/openchrome.man b/man/openchrome.man
+index e20b68e..f10b5e6 100644
+--- a/man/openchrome.man
++++ b/man/openchrome.man
+@@ -112,6 +112,13 @@ acceleration of compositing.  Since EXA, and in particular its composite
+ acceleration, is still experimental, this is a way to disable a misbehaving
+ composite acceleration.
+ .TP
++.BI "Option \*qExaTransform\*q  \*q" boolean \*q
++Accelerate Render composites whose source or mask has an affine transform
++(scaling, rotation, skew), with nearest or bilinear filtering, on the 3D
++engine. Projective transforms and pictures larger than 2048x2048 still fall
++back to software. Only implemented for the UniChrome and UniChrome Pro
++(not Chrome9) 3D engine. Default: disabled.
++.TP
+ .BI "Option \*qExaScratchSize\*q  \*q" integer \*q
+ Sets the size of the EXA scratch area to "integer" kB.  This area is
+ used by EXA as a last place to look for available space for pixmaps.
+diff --git a/src/via_3d.c b/src/via_3d.c
+index e2d04ff..7ab5a9d 100644
+--- a/src/via_3d.c
++++ b/src/via_3d.c
+@@ -24,6 +24,7 @@
+ #include "via_3d.h"
+ #include "via_3d_reg.h"
+ #include <picturestr.h>
++#include <string.h>
+ 
+ typedef struct
+ {
+@@ -229,9 +230,42 @@ viaSet3DTexture(Via3DState * v3d, int tex, CARD32 offset,
+     vTex->textureModesT = tMode - via_single;
+ 
+     vTex->agpTexture = agpTexture;
++    vTex->textureFilter = 0;
++    vTex->transform = NULL;
++    vTex->clipWidth = 0;
++    vTex->clipHeight = 0;
+     return TRUE;
+ }
+ 
++/*
++ * Give a texture unit set up with setTexture an affine Render transform
++ * (or NULL) and choose nearest or bilinear filtering for it. The transform
++ * is applied to the texture coordinates in emitQuad, so it must stay valid
++ * until the last emitQuad of the operation.
++ *
++ * clipWidth/clipHeight: for a picture without repeat, its size. emitQuad
++ * then only draws where the transformed coordinates fall inside it. Pass 0
++ * for a repeating picture.
++ */
++static void
++viaSet3DTexTransform(Via3DState * v3d, int tex, PictTransformPtr transform,
++                     Bool bilinear, int clipWidth, int clipHeight)
++{
++    ViaTextureUnit *vTex = v3d->tex + tex;
++    CARD32 filter = 0;
++
++    if (bilinear)
++        filter = (HC_HTXnFLSe_Linear | HC_HTXnFLSs_Linear |
++                  HC_HTXnFLTe_Linear | HC_HTXnFLTs_Linear);
++
++    if (filter != vTex->textureFilter)
++        vTex->textureDirty = TRUE;
++    vTex->textureFilter = filter;
++    vTex->transform = transform;
++    vTex->clipWidth = clipWidth;
++    vTex->clipHeight = clipHeight;
++}
++
+ static void
+ viaSet3DTexBlendCol(Via3DState * v3d, int tex, Bool component, CARD32 color)
+ {
+@@ -276,50 +310,38 @@ via3DOpSupported(CARD8 op)
+     return viaOperatorModes[op].supported;
+ }
+ 
++#define VIA_MAX_POLY 16
++
++/*
++ * Emit a convex polygon as a list of triangles fanning out from vertex 0.
++ *
++ * Texture coordinates are per vertex, already normalised to the
++ * power-of-two texture size. Vertices sit on pixel edges and the 3D
++ * engine samples at pixel centres, like OpenGL, so a texture coordinate
++ * computed at a pixel edge lands on texel centres with no extra offset.
++ */
+ static void
+-via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
+-              int src0X, int src0Y, int src1X, int src1Y, int w, int h)
++via3DEmitPolygon(Via3DState * v3d, ViaCommandBuffer * cb, int n,
++                 const float *x, const float *y,
++                 float s[VIA_NUM_TEXUNITS][VIA_MAX_POLY],
++                 float t[VIA_NUM_TEXUNITS][VIA_MAX_POLY],
++                 const int *order, int nOrder)
+ {
+     CARD32 acmd;
+-    float dx1, dx2, dy1, dy2, sx1[2], sx2[2], sy1[2], sy2[2], wf;
+-    double scalex, scaley;
+-    int i, numTex;
+-    ViaTextureUnit *vTex;
++    float wf;
++    int i, v, c, numTex;
+ 
++    (void)n;
+     numTex = v3d->numTextures;
+-    dx1 = dstX;
+-    dx2 = dstX + w;
+-    dy1 = dstY;
+-    dy2 = dstY + h;
+-
+-    if (numTex) {
+-        sx1[0] = src0X;
+-        sx1[1] = src1X;
+-        sy1[0] = src0Y;
+-        sy1[1] = src1Y;
+-        for (i = 0; i < numTex; ++i) {
+-            vTex = v3d->tex + i;
+-            scalex = 1. / (double)((1 << vTex->textureLevel0WExp));
+-            scaley = 1. / (double)((1 << vTex->textureLevel0HExp));
+-            sx2[i] = sx1[i] + w;
+-            sy2[i] = sy1[i] + h;
+-            sx1[i] *= scalex;
+-            sy1[i] *= scaley;
+-            sx2[i] *= scalex;
+-            sy2[i] *= scaley;
+-        }
+-    }
+-
+-    wf = 0.05;
+ 
+     /*
+-     * Vertex buffer. Emit two 3-point triangles. The W or Z coordinate
+-     * is needed for AGP DMA, and the W coordinate is for some obscure
+-     * reason needed for texture mapping to be done correctly. So emit
+-     * a w value after the x and y coordinates.
++     * The W or Z coordinate is needed for AGP DMA, and the W coordinate
++     * is for some obscure reason needed for texture mapping to be done
++     * correctly. So emit a w value after the x and y coordinates.
+      */
++    wf = 0.05;
+ 
+-    BEGIN_H2(HC_ParaType_CmdVdata, 22 + numTex * 6);
++    BEGIN_H2(HC_ParaType_CmdVdata, 4 + nOrder * (3 + 2 * numTex));
+     acmd = ((1 << 14) | (1 << 13) | (1 << 11));
+     if (numTex)
+         acmd |= ((1 << 7) | (1 << 8));
+@@ -328,59 +350,167 @@ via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
+     acmd = 2 << 16;
+     OUT_RING_SubA(0xEE, acmd);
+ 
+-    OUT_RING(*((CARD32 *) (&dx1)));
+-    OUT_RING(*((CARD32 *) (&dy1)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx1 + i)));
+-        OUT_RING(*((CARD32 *) (sy1 + i)));
++    for (v = 0; v < nOrder; ++v) {
++        c = order[v];
++        OUT_RING(*((CARD32 *) (&x[c])));
++        OUT_RING(*((CARD32 *) (&y[c])));
++        OUT_RING(*((CARD32 *) (&wf)));
++        for (i = 0; i < numTex; ++i) {
++            OUT_RING(*((CARD32 *) (&s[i][c])));
++            OUT_RING(*((CARD32 *) (&t[i][c])));
++        }
+     }
+ 
+-    OUT_RING(*((CARD32 *) (&dx2)));
+-    OUT_RING(*((CARD32 *) (&dy1)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx2 + i)));
+-        OUT_RING(*((CARD32 *) (sy1 + i)));
++    OUT_RING_SubA(0xEE,
++                  acmd | HC_HPLEND_MASK | HC_HPMValidN_MASK | HC_HE3Fire_MASK);
++    OUT_RING_SubA(0xEE,
++                  acmd | HC_HPLEND_MASK | HC_HPMValidN_MASK | HC_HE3Fire_MASK);
++
++    ADVANCE_RING;
++}
++
++/*
++ * Clip a convex polygon to the half-plane a*x + b*y + c >= 0
++ * (Sutherland-Hodgman). Returns the new vertex count.
++ */
++static int
++viaClipPolygon(int n, float *x, float *y, double a, double b, double c)
++{
++    float ox[VIA_MAX_POLY], oy[VIA_MAX_POLY];
++    double d0, d1, f;
++    int i, j, m = 0;
++
++    for (i = 0; i < n; ++i) {
++        j = (i + 1) % n;
++        d0 = a * x[i] + b * y[i] + c;
++        d1 = a * x[j] + b * y[j] + c;
++        if (d0 >= 0 && m < VIA_MAX_POLY) {
++            ox[m] = x[i];
++            oy[m++] = y[i];
++        }
++        if ((d0 >= 0) != (d1 >= 0) && m < VIA_MAX_POLY) {
++            f = d0 / (d0 - d1);
++            ox[m] = x[i] + f * (x[j] - x[i]);
++            oy[m++] = y[i] + f * (y[j] - y[i]);
++        }
+     }
++    memcpy(x, ox, m * sizeof(float));
++    memcpy(y, oy, m * sizeof(float));
++    return m;
++}
++
++static void
++via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
++              int src0X, int src0Y, int src1X, int src1Y, int w, int h)
++{
++    /* Two triangles over the corners top-left, top-right, bottom-left,
++     * bottom-right. This is the order the driver has always used. */
++    static const int quadOrder[6] = { 0, 1, 2, 2, 1, 3 };
++    float s[VIA_NUM_TEXUNITS][VIA_MAX_POLY], t[VIA_NUM_TEXUNITS][VIA_MAX_POLY];
++    float x[VIA_MAX_POLY], y[VIA_MAX_POLY];
++    int order[3 * (VIA_MAX_POLY - 2)];
++    double ax[VIA_NUM_TEXUNITS], bx[VIA_NUM_TEXUNITS], cx[VIA_NUM_TEXUNITS];
++    double ay[VIA_NUM_TEXUNITS], by[VIA_NUM_TEXUNITS], cy[VIA_NUM_TEXUNITS];
++    int srcX[VIA_NUM_TEXUNITS], srcY[VIA_NUM_TEXUNITS];
++    double tw, lo, hiX, hiY, px, py;
++    PictTransformPtr m;
++    ViaTextureUnit *vTex;
++    Bool clip = FALSE;
++    int i, c, n;
++
++    srcX[0] = src0X;
++    srcY[0] = src0Y;
++    srcX[1] = src1X;
++    srcY[1] = src1Y;
+ 
+-    OUT_RING(*((CARD32 *) (&dx1)));
+-    OUT_RING(*((CARD32 *) (&dy2)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx1 + i)));
+-        OUT_RING(*((CARD32 *) (sy2 + i)));
++    /*
++     * For each texture, the source position as an affine function of the
++     * destination position (px, py) relative to (dstX, dstY):
++     * sx = ax*px + bx*py + cx, sy = ay*px + by*py + cy.
++     */
++    for (i = 0; i < v3d->numTextures; ++i) {
++        vTex = v3d->tex + i;
++        m = vTex->transform;
++        if (!m) {
++            ax[i] = 1; bx[i] = 0; cx[i] = srcX[i];
++            ay[i] = 0; by[i] = 1; cy[i] = srcY[i];
++            continue;
++        }
++        /* Affine only: CheckComposite rejects projective transforms. */
++        tw = pixman_fixed_to_double(m->matrix[2][2]);
++        ax[i] = pixman_fixed_to_double(m->matrix[0][0]) / tw;
++        bx[i] = pixman_fixed_to_double(m->matrix[0][1]) / tw;
++        cx[i] = (pixman_fixed_to_double(m->matrix[0][2]) / tw +
++                 ax[i] * srcX[i] + bx[i] * srcY[i]);
++        ay[i] = pixman_fixed_to_double(m->matrix[1][0]) / tw;
++        by[i] = pixman_fixed_to_double(m->matrix[1][1]) / tw;
++        cy[i] = (pixman_fixed_to_double(m->matrix[1][2]) / tw +
++                 ay[i] * srcX[i] + by[i] * srcY[i]);
++        if (vTex->clipWidth)
++            clip = TRUE;
+     }
+ 
+-    OUT_RING(*((CARD32 *) (&dx1)));
+-    OUT_RING(*((CARD32 *) (&dy2)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx1 + i)));
+-        OUT_RING(*((CARD32 *) (sy2 + i)));
++    /* The destination rectangle, relative to (dstX, dstY). */
++    n = 4;
++    x[0] = 0; y[0] = 0;
++    x[1] = w; y[1] = 0;
++    x[2] = 0; y[2] = h;
++    x[3] = w; y[3] = h;
++
++    if (clip) {
++        /*
++         * A transformed picture without repeat is transparent outside its
++         * bounds. CheckComposite only allows operators for which a
++         * transparent source leaves the destination unchanged, so drawing
++         * just the part of the rectangle that maps inside the picture is
++         * correct. Clip to where every sample the filter takes is inside
++         * the picture: for bilinear, half a texel in from each edge, since
++         * the texture unit would otherwise read past the end of NPOT rows.
++         */
++        x[2] = w; y[2] = h;	/* reorder into a convex loop */
++        x[3] = 0; y[3] = h;
++        for (i = 0; i < v3d->numTextures && n >= 3; ++i) {
++            vTex = v3d->tex + i;
++            if (!vTex->transform || !vTex->clipWidth)
++                continue;
++            lo = vTex->textureFilter ? 0.5 : 0.0;
++            hiX = vTex->clipWidth - lo;
++            hiY = vTex->clipHeight - lo;
++            n = viaClipPolygon(n, x, y, ax[i], bx[i], cx[i] - lo);
++            n = viaClipPolygon(n, x, y, -ax[i], -bx[i], hiX - cx[i]);
++            n = viaClipPolygon(n, x, y, ay[i], by[i], cy[i] - lo);
++            n = viaClipPolygon(n, x, y, -ay[i], -by[i], hiY - cy[i]);
++        }
++        if (n < 3)
++            return;
++        for (c = 0; c < n - 2; ++c) {
++            order[3 * c] = 0;
++            order[3 * c + 1] = c + 1;
++            order[3 * c + 2] = c + 2;
++        }
+     }
+ 
+-    OUT_RING(*((CARD32 *) (&dx2)));
+-    OUT_RING(*((CARD32 *) (&dy1)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx2 + i)));
+-        OUT_RING(*((CARD32 *) (sy1 + i)));
++    for (i = 0; i < v3d->numTextures; ++i) {
++        vTex = v3d->tex + i;
++        for (c = 0; c < n; ++c) {
++            px = x[c];
++            py = y[c];
++            s[i][c] = (ax[i] * px + bx[i] * py + cx[i]) /
++                      (double)(1 << vTex->textureLevel0WExp);
++            t[i][c] = (ay[i] * px + by[i] * py + cy[i]) /
++                      (double)(1 << vTex->textureLevel0HExp);
++        }
+     }
+ 
+-    OUT_RING(*((CARD32 *) (&dx2)));
+-    OUT_RING(*((CARD32 *) (&dy2)));
+-    OUT_RING(*((CARD32 *) (&wf)));
+-    for (i = 0; i < numTex; ++i) {
+-        OUT_RING(*((CARD32 *) (sx2 + i)));
+-        OUT_RING(*((CARD32 *) (sy2 + i)));
++    for (c = 0; c < n; ++c) {
++        x[c] += dstX;
++        y[c] += dstY;
+     }
+-    OUT_RING_SubA(0xEE,
+-                  acmd | HC_HPLEND_MASK | HC_HPMValidN_MASK | HC_HE3Fire_MASK);
+-    OUT_RING_SubA(0xEE,
+-                  acmd | HC_HPLEND_MASK | HC_HPMValidN_MASK | HC_HE3Fire_MASK);
+ 
+-    ADVANCE_RING;
++    if (clip)
++        via3DEmitPolygon(v3d, cb, n, x, y, s, t, order, 3 * (n - 2));
++    else
++        via3DEmitPolygon(v3d, cb, n, x, y, s, t, quadOrder, 6);
+ }
+ 
+ static void
+@@ -497,7 +627,7 @@ via3DEmitState(Via3DState * v3d, ViaCommandBuffer * cb, Bool forceUpload)
+             OUT_RING_SubA(HC_SubA_HTXnL0_5WE, vTex->textureLevel0WExp);
+             OUT_RING_SubA(HC_SubA_HTXnL0_5HE, vTex->textureLevel0HExp);
+             OUT_RING_SubA(HC_SubA_HTXnL0OS, 0x00);
+-            OUT_RING_SubA(HC_SubA_HTXnTB, 0x00);
++            OUT_RING_SubA(HC_SubA_HTXnTB, vTex->textureFilter);
+             OUT_RING_SubA(HC_SubA_HTXnMPMD,
+                           ((((unsigned)vTex->textureModesT) << 19)
+                            | (((unsigned)vTex->textureModesS) << 16)));
+@@ -557,6 +687,7 @@ viaInit3DState(Via3DState * v3d)
+     v3d->setFlags = viaSet3DFlags;
+     v3d->setTexture = viaSet3DTexture;
+     v3d->setTexBlendCol = viaSet3DTexBlendCol;
++    v3d->setTexTransform = viaSet3DTexTransform;
+     v3d->opSupported = via3DOpSupported;
+     v3d->setCompositeOperator = viaSet3DCompositeOperator;
+     v3d->emitQuad = via3DEmitQuad;
+diff --git a/src/via_3d.h b/src/via_3d.h
+index 15be0be..48fc37e 100644
+--- a/src/via_3d.h
++++ b/src/via_3d.h
+@@ -27,6 +27,7 @@
+ #include "xorg-server.h"
+ #include "xf86.h"
+ #include "via_dmabuffer.h"
++#include <picturestr.h>
+ 
+ #define VIA_NUM_TEXUNITS 2
+ 
+@@ -66,6 +67,10 @@ typedef struct _ViaTextureUnit
+     Bool textureDirty;
+     Bool texBColDirty;
+     Bool npot;
++    CARD32 textureFilter;	/* HTXnTB filter bits */
++    PictTransformPtr transform;	/* NULL, or an affine Render transform */
++    int clipWidth;		/* picture size to clip to, 0 if repeating */
++    int clipHeight;
+ } ViaTextureUnit;
+ 
+ typedef struct _Via3DState
+@@ -104,6 +109,9 @@ typedef struct _Via3DState
+ 	ViaTexBlendingModes blendingMode, Bool agpTexture);
+     void (*setTexBlendCol) (struct _Via3DState * v3d, int tex, Bool component,
+ 	CARD32 color);
++    void (*setTexTransform) (struct _Via3DState * v3d, int tex,
++	PictTransformPtr transform, Bool bilinear, int clipWidth,
++	int clipHeight);
+     void (*setCompositeOperator) (struct _Via3DState * v3d, CARD8 op);
+         Bool(*opSupported) (CARD8 op);
+     void (*emitQuad) (struct _Via3DState * v3d, ViaCommandBuffer * cb,
+diff --git a/src/via_driver.c b/src/via_driver.c
+index 439313c..cbbfb20 100644
+--- a/src/via_driver.c
++++ b/src/via_driver.c
+@@ -169,6 +169,7 @@ typedef enum
+     OPTION_NOACCEL,
+     OPTION_EXA_NOCOMPOSITE,
+     OPTION_EXA_SCRATCH_SIZE,
++    OPTION_EXA_TRANSFORM,
+     OPTION_SWCURSOR,
+     OPTION_SHADOW_FB,
+     OPTION_ROTATION_TYPE,
+@@ -199,6 +200,7 @@ static OptionInfoRec VIAOptions[] = {
+     {OPTION_NOACCEL,             "NoAccel",          OPTV_BOOLEAN, {0}, FALSE},
+     {OPTION_EXA_NOCOMPOSITE,     "ExaNoComposite",   OPTV_BOOLEAN, {0}, FALSE},
+     {OPTION_EXA_SCRATCH_SIZE,    "ExaScratchSize",   OPTV_INTEGER, {0}, FALSE},
++    {OPTION_EXA_TRANSFORM,       "ExaTransform",     OPTV_BOOLEAN, {0}, FALSE},
+     {OPTION_SWCURSOR,            "SWCursor",         OPTV_BOOLEAN, {0}, FALSE},
+     {OPTION_SHADOW_FB,           "ShadowFB",         OPTV_BOOLEAN, {0}, FALSE},
+     {OPTION_ROTATION_TYPE,       "RotationType",     OPTV_ANYSTR,  {0}, FALSE},
+@@ -633,6 +635,7 @@ VIASetupDefaultOptions(ScrnInfoPtr pScrn)
+     pVia->shadowFB = FALSE;
+     pVia->NoAccel = FALSE;
+     pVia->noComposite = FALSE;
++    pVia->exaTransform = FALSE;
+     pVia->useEXA = TRUE;
+     pVia->exaScratchSize = VIA_SCRATCH_SIZE / 1024;
+     pVia->drmmode.hwcursor = TRUE;
+@@ -1273,6 +1276,12 @@ viaPreInit(ScrnInfoPtr pScrn, int flags)
+                        "EXA composite acceleration %s.\n",
+                        !pVia->noComposite ? "enabled" : "disabled");
+ 
++            from = xf86GetOptValBool(VIAOptions, OPTION_EXA_TRANSFORM,
++                                     &pVia->exaTransform) ? X_CONFIG : X_DEFAULT;
++            xf86DrvMsg(pScrn->scrnIndex, from,
++                       "EXA transformed and bilinear composites %s.\n",
++                       pVia->exaTransform ? "enabled" : "disabled");
++
+             //pVia->exaScratchSize = VIA_SCRATCH_SIZE / 1024;
+             from = xf86GetOptValInteger(VIAOptions, OPTION_EXA_SCRATCH_SIZE,
+                                         &pVia->exaScratchSize)
+diff --git a/src/via_driver.h b/src/via_driver.h
+index 4e22172..8dd57dc 100644
+--- a/src/via_driver.h
++++ b/src/via_driver.h
+@@ -272,6 +272,7 @@ typedef struct _VIA {
+     int                 exaScratchSize;
+     char *              scratchAddr;
+     Bool                noComposite;
++    Bool                exaTransform;
+     struct buffer_object *scratchBuffer;
+ #ifdef HAVE_DRI
+     struct buffer_object *texAGPBuffer;
+@@ -408,7 +409,9 @@ CARD32 viaBitExpandHelper(CARD32 pixel, CARD32 bits);
+ Bool viaCheckUpload(ScrnInfoPtr pScrn, Via3DState * v3d);
+ void viaPixelARGB8888(unsigned format, void *pixelP, CARD32 * argb8888);
+ Bool viaExpandablePixel(int format);
+-Bool viaExaPictureSupported(PicturePtr pict);
++Bool viaExaPictureSupported(PicturePtr pict, Bool allowTransform);
++ViaTextureModes viaExaTextureMode(PicturePtr pict);
++Bool viaExaTransformOpSupported(int op, PicturePtr pict);
+ void viaAccelFillPixmap(ScrnInfoPtr, unsigned long, unsigned long,
+ 			int, int, int, int, int, unsigned long);
+ void viaAccelTextureBlit(ScrnInfoPtr, unsigned long, unsigned, unsigned,
+diff --git a/src/via_exa.c b/src/via_exa.c
+index d6b492a..268fc65 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -403,9 +403,13 @@ viaIsPOT(int v)
+  *   filter don't matter.
+  * - Otherwise the picture must have no transform, and must not use a
+  *   convolution filter (the only filter that matters without one).
++ * - With allowTransform, an affine transform is accepted too, with the
++ *   nearest or bilinear filter, for drawables of at most 2048x2048 (the
++ *   largest texture), when the drawable is a pixmap. The caller then has
++ *   to set the transform on the texture unit with setTexTransform.
+  */
+ Bool
+-viaExaPictureSupported(PicturePtr pict)
++viaExaPictureSupported(PicturePtr pict, Bool allowTransform)
+ {
+     DrawablePtr d;
+     Bool solid;
+@@ -429,8 +433,29 @@ viaExaPictureSupported(PicturePtr pict)
+     if (solid)
+         return TRUE;
+ 
+-    if (pict->transform)
+-        return FALSE;
++    if (pict->transform) {
++        PictTransformPtr m = pict->transform;
++
++        if (!allowTransform)
++            return FALSE;
++        if (m->matrix[2][0] != 0 || m->matrix[2][1] != 0 ||
++            m->matrix[2][2] == 0)
++            return FALSE;
++        if (pict->filter != PictFilterNearest &&
++            pict->filter != PictFilterBilinear)
++            return FALSE;
++        if (d->width > 2048 || d->height > 2048)
++            return FALSE;
++        /*
++         * EXA folds the drawable position and pixmap offset into the
++         * source coordinates before the driver sees them, so the transform
++         * would be applied around the wrong origin for a window. Pixmaps
++         * have neither.
++         */
++        if (d->type != DRAWABLE_PIXMAP)
++            return FALSE;
++        return TRUE;
++    }
+ 
+     if (pict->filter == PictFilterConvolution)
+         return FALSE;
+@@ -438,6 +463,43 @@ viaExaPictureSupported(PicturePtr pict)
+     return TRUE;
+ }
+ 
++/*
++ * A transformed picture without repeat is drawn by clipping the geometry to
++ * the part that maps inside the picture (see via3DEmitQuad). That is only
++ * right for operators where a transparent source, or a transparent mask,
++ * leaves the destination as it was.
++ */
++Bool
++viaExaTransformOpSupported(int op, PicturePtr pict)
++{
++    if (!pict || !pict->transform || pict->repeat)
++        return TRUE;
++
++    switch (op) {
++    case PictOpOver:
++    case PictOpOverReverse:
++    case PictOpAtop:
++    case PictOpXor:
++    case PictOpAdd:
++        return TRUE;
++    default:
++        return FALSE;
++    }
++}
++
++/*
++ * Wrap mode for a texture: RepeatNormal wraps. Without repeat, untransformed
++ * composites never sample outside the picture (Render clips them to it),
++ * and transformed ones are clipped to it in via3DEmitQuad; clamp anyway.
++ */
++ViaTextureModes
++viaExaTextureMode(PicturePtr pict)
++{
++    if (pict->repeat)
++        return via_repeat;
++    return pict->transform ? via_clamp : via_repeat;
++}
++
+ #ifdef VIA_DEBUG_COMPOSITE
+ void
+ viaExaCompositePictDesc(PicturePtr pict, char *string, int n)
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index 4ed38ff..f9fede4 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -299,14 +299,22 @@ viaExaCheckComposite_H2(int op, PicturePtr pSrcPicture,
+     VIAPtr pVia = VIAPTR(pScrn);
+     Via3DState *v3d = &pVia->v3d;
+ 
+-    if (!viaExaPictureSupported(pSrcPicture) ||
+-        !viaExaPictureSupported(pMaskPicture)) {
++    if (!viaExaPictureSupported(pSrcPicture, pVia->exaTransform) ||
++        !viaExaPictureSupported(pMaskPicture, pVia->exaTransform)) {
+ #ifdef VIA_DEBUG_COMPOSITE
+         viaExaPrintCompositeInfo("Transform, filter or repeat not supported", op, pSrcPicture, pMaskPicture, pDstPicture);
+ #endif
+         return FALSE;
+     }
+ 
++    if (!viaExaTransformOpSupported(op, pSrcPicture) ||
++        !viaExaTransformOpSupported(op, pMaskPicture)) {
++#ifdef VIA_DEBUG_COMPOSITE
++        viaExaPrintCompositeInfo("Operator not supported with a transformed picture", op, pSrcPicture, pMaskPicture, pDstPicture);
++#endif
++        return FALSE;
++    }
++
+     if (!pSrcPicture->pDrawable)
+         return FALSE;
+ 
+@@ -477,9 +485,15 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+         if (!v3d->setTexture(v3d, curTex, offset,
+                              exaGetPixmapPitch(pSrc), pVia->nPOT[curTex],
+                              1 << width, 1 << height, pSrcPicture->format,
+-                             via_repeat, via_repeat, srcMode, isAGP)) {
++                             viaExaTextureMode(pSrcPicture),
++                             viaExaTextureMode(pSrcPicture), srcMode, isAGP)) {
+             return FALSE;
+         }
++        if (pSrcPicture->transform)
++            v3d->setTexTransform(v3d, curTex, pSrcPicture->transform,
++                                 pSrcPicture->filter == PictFilterBilinear,
++                                 pSrcPicture->repeat ? 0 : pSrc->drawable.width,
++                                 pSrcPicture->repeat ? 0 : pSrc->drawable.height);
+         curTex++;
+     }
+ 
+@@ -493,11 +507,17 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+         if (!v3d->setTexture(v3d, curTex, offset,
+                              exaGetPixmapPitch(pMask), pVia->nPOT[curTex],
+                              1 << width, 1 << height, pMaskPicture->format,
+-                             via_repeat, via_repeat,
++                             viaExaTextureMode(pMaskPicture),
++                             viaExaTextureMode(pMaskPicture),
+                              ((pMaskPicture->componentAlpha)
+                               ? via_comp_mask : via_mask), isAGP)) {
+             return FALSE;
+         }
++        if (pMaskPicture->transform)
++            v3d->setTexTransform(v3d, curTex, pMaskPicture->transform,
++                                 pMaskPicture->filter == PictFilterBilinear,
++                                 pMaskPicture->repeat ? 0 : pMask->drawable.width,
++                                 pMaskPicture->repeat ? 0 : pMask->drawable.height);
+         curTex++;
+     }
+ 
+diff --git a/src/via_exa_h6.c b/src/via_exa_h6.c
+index 5eb4610..2044b42 100644
+--- a/src/via_exa_h6.c
++++ b/src/via_exa_h6.c
+@@ -301,8 +301,8 @@ viaExaCheckComposite_H6(int op, PicturePtr pSrcPicture,
+     VIAPtr pVia = VIAPTR(pScrn);
+     Via3DState *v3d = &pVia->v3d;
+ 
+-    if (!viaExaPictureSupported(pSrcPicture) ||
+-        !viaExaPictureSupported(pMaskPicture)) {
++    if (!viaExaPictureSupported(pSrcPicture, FALSE) ||
++        !viaExaPictureSupported(pMaskPicture, FALSE)) {
+ #ifdef VIA_DEBUG_COMPOSITE
+         viaExaPrintCompositeInfo("Transform, filter or repeat not supported", op, pSrcPicture, pMaskPicture, pDstPicture);
+ #endif
+-- 
+2.43.0
+
