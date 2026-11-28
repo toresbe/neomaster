@@ -9,7 +9,7 @@
 //!     MA_TOKEN=... cargo run --release -p player --example latency_probe -- \
 //!         <media_url_1> <media_url_2> [trials] [lead_ms]
 //!
-//! `PROBE_SKIP=index` skips with `play_index(1)` instead of MA's `next`, which waits a
+//! `PROBE_SKIP=index` skips with `play_index(current + 1)` instead of MA's `next`, which waits a
 //! fixed second before it acts (as neomaster's NEXT now does).
 
 use std::sync::Arc;
@@ -167,7 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let from = log.lock().len();
         let t2 = Instant::now();
         if by_index {
-            ma.play_index(&queue, 1).await?;
+            // MA keeps the played items in the queue: the next one is current + 1
+            let current = ma.queue(&queue).await?.current_index.unwrap_or(0);
+            ma.play_index(&queue, current + 1).await?;
         } else {
             ma.next(&queue).await?;
         }
