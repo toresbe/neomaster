@@ -13,6 +13,7 @@ pub mod fake;
 pub mod idle;
 pub mod library;
 pub mod settings_menu;
+pub mod volume;
 pub mod wheel;
 
 use std::collections::HashMap;
@@ -237,9 +238,9 @@ struct Switch {
 pub const FADE_OUT: Duration = Duration::from_millis(100);
 pub const FADE_BLACK: Duration = Duration::from_millis(230);
 pub const FADE_IN: Duration = Duration::from_millis(100);
-/// How long the volume arc stays after the last change, then how long it takes to fade.
-const VOLUME_HOLD: Duration = Duration::from_millis(1500);
-const VOLUME_FADE: Duration = Duration::from_millis(300);
+/// How long the volume arc stays after the last change, then how long it takes to fade (stock).
+const VOLUME_HOLD: Duration = volume::HOLD;
+const VOLUME_FADE: Duration = volume::FADE_OUT;
 /// How long the wheel's letter stays after the last step.
 const LETTER_HOLD: Duration = Duration::from_millis(1000);
 
@@ -268,6 +269,15 @@ pub struct Ui {
     plain_source: Option<String>,
     volume: u8,
     volume_shown_until: Time,
+    /// The volume wheel's part-step (see [`volume`]).
+    volume_wheel: volume::VolumeWheel,
+    /// False when the room's master owns the volume (link source): the arc then shows full, as
+    /// the stock does when it cannot know the level.
+    volume_known: bool,
+    /// The arc's level when it last started moving, and when; when the arc last appeared.
+    volume_level_from: f32,
+    volume_level_at: Time,
+    volume_shown_since: Time,
     /// Long GO: the context menu, open while GO is held.
     context: Option<usize>,
     context_scroll: f32,
@@ -314,6 +324,11 @@ impl Ui {
             plain_source: None,
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
+            volume_wheel: volume::VolumeWheel::default(),
+            volume_known: true,
+            volume_level_from: 0.0,
+            volume_level_at: Time::ZERO,
+            volume_shown_since: Time::ZERO,
             context: None,
             context_scroll: CONTEXT_DEFAULT as f32,
             go_long: false,
@@ -532,11 +547,14 @@ impl Ui {
                 }
             }
             Input::VolumeWheel(counts) => {
-                let v = (self.volume as i32 + counts).clamp(0, MAX_VOLUME as i32) as u8;
-                self.volume_shown_until = now + VOLUME_HOLD;
-                if v != self.volume {
-                    self.volume = v;
-                    fx.push(Effect::Volume(v));
+                let steps = self.volume_wheel.turn(counts, now);
+                if steps != 0 {
+                    let v = (self.volume as i32 + steps).clamp(0, MAX_VOLUME as i32) as u8;
+                    self.show_volume(now);
+                    if v != self.volume {
+                        self.volume = v;
+                        fx.push(Effect::Volume(v));
+                    }
                 }
             }
             Input::Pressed(Button::Go) => self.go_long = false,
@@ -823,11 +841,9 @@ impl Ui {
         let glow =
             if self.zones[self.zone_index()].kind == ViewKind::NowPlaying { None } else { self.beam_glow.next_change(next) };
         let volume_end = self.volume_shown_until + VOLUME_FADE;
-        let volume = (self.volume_shown_until > Time::ZERO && drawn < volume_end).then_some(if now < self.volume_shown_until {
-            self.volume_shown_until
-        } else {
-            next
-        });
+        let changing = drawn < self.volume_level_at + volume::LEVEL_TIME || drawn < self.volume_shown_since + volume::FADE_IN;
+        let volume = (self.volume_shown_until > Time::ZERO && drawn < volume_end)
+            .then_some(if now < self.volume_shown_until && !changing { self.volume_shown_until } else { next });
         let letter_end = self.last_step + LETTER_HOLD;
         let letter = (drawn < letter_end && self.level().is_some_and(|l| l.alphabetical)).then_some(letter_end);
         [volume, letter, glow].into_iter().flatten().min()
@@ -836,6 +852,37 @@ impl Ui {
     /// The next timer [`Ui::tick`] needs, if any.
     pub fn next_timer(&self) -> Option<Time> {
         self.idle.next_deadline()
+    }
+
+    /// Show the volume arc (again) at `now`, its level moving from where it is shown.
+    fn show_volume(&mut self, now: Time) {
+        if self.volume_shown_until == Time::ZERO || now >= self.volume_shown_until + VOLUME_FADE {
+            self.volume_shown_since = now;
+            self.volume_level_from = self.volume_level_target();
+        } else {
+            self.volume_level_from = self.volume_level_shown(now);
+        }
+        self.volume_level_at = now;
+        self.volume_shown_until = now + VOLUME_HOLD;
+    }
+
+    /// The arc's level as drawn at `now`: towards the volume's in 0.1 s.
+    pub(crate) fn volume_level_shown(&self, now: Time) -> f32 {
+        let to = self.volume_level_target();
+        let t = now.saturating_sub(self.volume_level_at).as_secs_f32() / volume::LEVEL_TIME.as_secs_f32();
+        self.volume_level_from + (to - self.volume_level_from) * t.min(1.0)
+    }
+
+    /// The level the arc is heading for: the volume's, or full when it is not known
+    /// (`BS5System_OnAudioVolumeChange` shows 100 % then).
+    fn volume_level_target(&self) -> f32 {
+        volume::level(if self.volume_known { self.volume } else { MAX_VOLUME }, MAX_VOLUME)
+    }
+
+    /// Whether neomaster knows the volume (audio master) or the room's master owns it (link
+    /// source); in the second case the arc shows full.
+    pub fn set_volume_known(&mut self, known: bool) {
+        self.volume_known = known;
     }
 
     pub fn volume(&self) -> u8 {
@@ -1331,10 +1378,24 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_volume_shows_full() {
+        let mut ui = ui_at(0);
+        ui.set_volume_known(false);
+        ui.set_volume(45);
+        ui.input(Input::VolumeWheel(4), ms(1));
+        assert_eq!(ui.volume_level_shown(ms(200)), volume::level(MAX_VOLUME, MAX_VOLUME));
+    }
+
+    #[test]
     fn volume_is_clamped_and_reported() {
         let mut ui = ui_at(0);
-        assert_eq!(ui.input(Input::VolumeWheel(3), ms(1)), vec![Effect::Volume(37)]);
-        ui.input(Input::VolumeWheel(200), ms(2));
+        // stock: 3.47 counts a step, at most every 100 ms, at most 2 steps (1 after a rest)
+        assert_eq!(ui.input(Input::VolumeWheel(3), ms(1)), vec![]);
+        assert_eq!(ui.input(Input::VolumeWheel(1), ms(2)), vec![Effect::Volume(35)]);
+        assert_eq!(ui.input(Input::VolumeWheel(20), ms(150)), vec![Effect::Volume(37)]);
+        for i in 0..40 {
+            ui.input(Input::VolumeWheel(20), ms(300 + 110 * i));
+        }
         assert_eq!(ui.volume(), MAX_VOLUME);
     }
 

@@ -238,8 +238,8 @@ fn input_loop(
                             send(panel.report(0, 0))?;
                         }
                     }
-                    (XK_KP_ADD, _) | (_, '+') | (_, '=') => send(panel.report(0, 1))?,
-                    (XK_KP_SUBTRACT, _) | (_, '-') => send(panel.report(0, -1))?,
+                    (XK_KP_ADD, _) | (_, '+') | (_, '=') => send(panel.report(0, 4))?, // 4 counts: one stock volume step
+                    (XK_KP_SUBTRACT, _) | (_, '-') => send(panel.report(0, -4))?,
                     (_, 's') if u16::from(k.state) & u16::from(KeyButMask::SHIFT) != 0 => send(Event::AllStandby)?,
                     (_, 's') => send(Event::Standby)?,
                     _ => {}

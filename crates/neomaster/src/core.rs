@@ -190,6 +190,7 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
 impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
     pub fn new(mut ui: Ui, panel_out: P, aux_out: A, link: Link, pc2_out: Q, scenes: std_mpsc::SyncSender<Scene>) -> Self {
         let mut link = link;
+        ui.set_volume_known(link.role() != LinkRole::SourceCenter);
         if link.role() == LinkRole::SourceCenter {
             ui.set_volume(NEUTRAL_VOLUME);
             link.rebase_volume(NEUTRAL_VOLUME);
@@ -458,6 +459,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
             self.aux_effects(fx);
             let mode = cfg.pc2_mode();
             self.link = Link::new(cfg);
+            self.ui.set_volume_known(self.link.role() != LinkRole::SourceCenter);
             if self.link.role() == LinkRole::SourceCenter {
                 self.ui.set_volume(NEUTRAL_VOLUME);
                 self.link.rebase_volume(NEUTRAL_VOLUME);

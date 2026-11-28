@@ -153,8 +153,10 @@ enum Machine {
     SourceCenter(SourceCenter),
 }
 
-/// Wheel counts (UI volume steps) per Beo4 volume key in the link source role.
-pub const COUNTS_PER_VOLUME_KEY: i32 = 4;
+/// UI volume steps per Beo4 volume key in the link source role. The UI already makes one step
+/// per 3.47 wheel counts as the stock does (`ui::volume`), which is the "one key per about 4
+/// counts" seen in the capture, so each step is one key.
+pub const COUNTS_PER_VOLUME_KEY: i32 = 1;
 
 pub struct Link {
     cfg: Config,
