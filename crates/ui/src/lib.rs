@@ -6,6 +6,7 @@
 //! core to carry out (click the panel, play something, set the volume); [`Ui::scene`] turns it
 //! into a [`render::Scene`] (the layout is in `draw.rs`). Nothing here blocks or touches a device.
 
+pub mod arc;
 pub mod assets;
 mod draw;
 pub mod fake;
@@ -78,13 +79,12 @@ pub enum ViewKind {
     Info,
 }
 
-/// A pointer zone: positions `lo..=hi` show `view`. The boundaries are guesses between the
-/// captured centres and belong in config, to be tuned on the panel.
+/// A pointer zone. Zones run from the bottom of the arc to the top: now-playing below the arc,
+/// the labelled views, now-playing above it. The labelled ones sit at the stock label angles for
+/// their count and the beam picks the nearest ([`arc`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Zone {
     pub name: &'static str,
-    pub lo: u8,
-    pub hi: u8,
     pub kind: ViewKind,
     root: Root,
 }
@@ -106,59 +106,61 @@ enum Root {
 /// N.MUSIC as captured: now-playing at both ends, the lists in between.
 pub fn n_music_zones() -> Vec<Zone> {
     use ViewKind::*;
-    let z = |name, lo, hi, kind, root| Zone { name, lo, hi, kind, root };
+    let z = |name, kind, root| Zone { name, kind, root };
     vec![
-        z("NOW PLAYING", 0, 15, NowPlaying, Root::None),
-        z("QUEUE", 16, 42, List, Root::Queue),
-        z("FAVOURITES", 43, 56, List, Root::Favourites),
-        z("TITLES", 57, 65, List, Root::Titles),
-        z("ALBUMS", 66, 72, List, Root::Albums),
-        z("ARTISTS", 73, 78, List, Root::Artists),
-        z("COVERS", 79, 85, Covers, Root::Covers),
-        z("MODE", 86, 99, Menu, Root::Mode),
-        z("NOW PLAYING", 100, 127, NowPlaying, Root::None),
+        z("NOW PLAYING", NowPlaying, Root::None),
+        z("QUEUE", List, Root::Queue),
+        z("FAVOURITES", List, Root::Favourites),
+        z("TITLES", List, Root::Titles),
+        z("ALBUMS", List, Root::Albums),
+        z("ARTISTS", List, Root::Artists),
+        z("COVERS", Covers, Root::Covers),
+        z("MODE", Menu, Root::Mode),
+        z("NOW PLAYING", NowPlaying, Root::None),
     ]
 }
 
+/// A pointer value that shows zone `i` of `zones`: the bottom or top end for now-playing, the
+/// label's own angle for the others.
+pub fn zone_pointer(zones: &[Zone], i: usize) -> u8 {
+    let labelled: Vec<usize> = (0..zones.len()).filter(|z| zones[*z].kind != ViewKind::NowPlaying).collect();
+    match labelled.iter().position(|z| *z == i) {
+        Some(k) => arc::pointer_at(arc::label_angles(labelled.len())[labelled.len() - 1 - k]),
+        None if i == 0 => 0,
+        None => arc::TOP,
+    }
+}
+
 /// SETTINGS: the normal menu's 7 sections or the hidden menu's 9, with MODE above them and
-/// now-playing at both ends. The normal menu's boundaries are the midpoints between the labels'
-/// places on the arc, mapped back with the slope measured in N.MUSIC (0.83 degrees per step); the
-/// hidden menu's are fitted to the pointer positions captured there (84 SYSTEM INFO, 79 SYSTEM
-/// SETTINGS, 75 MAINTENANCE, 71 and 66 MUSIC SERVICES, 61 SERVICE SETTINGS, 56 and 52 PRODUCT
-/// INFO, 46 NETWORK INFO, 41 NETWORK SETTINGS, 36 ROLES).
+/// now-playing at both ends. The stock label angles put the hidden menu's sections exactly at
+/// the pointer positions captured there (84 SYSTEM INFO, 79 SYSTEM SETTINGS, 75 MAINTENANCE, 71
+/// and 66 MUSIC SERVICES, 61 SERVICE SETTINGS, 56 and 52 PRODUCT INFO, 46 NETWORK INFO, 41
+/// NETWORK SETTINGS, 36 ROLES).
 pub fn settings_zones(hidden: bool) -> Vec<Zone> {
     use settings::menu::SectionId::*;
     use ViewKind::*;
-    let ranges: &[(settings::menu::SectionId, u8, u8)] = if hidden {
+    let sections: &[settings::menu::SectionId] = if hidden {
         &[
-            (Roles, 16, 38),
-            (NetworkSettings, 39, 43),
-            (NetworkInfo, 44, 48),
-            (ProductInfo, 49, 57),
-            (ServiceSettings, 58, 63),
-            (MusicServices, 64, 72),
-            (Maintenance, 73, 76),
-            (SystemSettings, 77, 81),
-            (SystemInfo, 82, 87),
+            Roles,
+            NetworkSettings,
+            NetworkInfo,
+            ProductInfo,
+            ServiceSettings,
+            MusicServices,
+            Maintenance,
+            SystemSettings,
+            SystemInfo,
         ]
     } else {
-        &[
-            (Roles, 16, 38),
-            (NetworkInfo, 39, 46),
-            (ServiceSettings, 47, 53),
-            (MusicServices, 54, 62),
-            (Maintenance, 63, 71),
-            (SystemSettings, 72, 79),
-            (SystemInfo, 80, 87),
-        ]
+        &[Roles, NetworkInfo, ServiceSettings, MusicServices, Maintenance, SystemSettings, SystemInfo]
     };
-    let mut v = vec![Zone { name: "NOW PLAYING", lo: 0, hi: 15, kind: NowPlaying, root: Root::None }];
-    for &(id, lo, hi) in ranges {
+    let mut v = vec![Zone { name: "NOW PLAYING", kind: NowPlaying, root: Root::None }];
+    for &id in sections {
         let kind = if matches!(id, SystemInfo | ProductInfo | NetworkInfo) { Info } else { Menu };
-        v.push(Zone { name: id.title(), lo, hi, kind, root: Root::Settings(id) });
+        v.push(Zone { name: id.title(), kind, root: Root::Settings(id) });
     }
-    v.push(Zone { name: "MODE", lo: 88, hi: 99, kind: Menu, root: Root::Mode });
-    v.push(Zone { name: "NOW PLAYING", lo: 100, hi: 127, kind: NowPlaying, root: Root::None });
+    v.push(Zone { name: "MODE", kind: Menu, root: Root::Mode });
+    v.push(Zone { name: "NOW PLAYING", kind: NowPlaying, root: Root::None });
     v
 }
 
@@ -249,9 +251,13 @@ pub struct Ui {
     zones: Vec<Zone>,
     /// One navigation stack per zone, so leaving a zone and coming back returns to the same place.
     stacks: Vec<Vec<Level>>,
+    /// The pointer as the stock uses it: the panel's value snapped at the ends ([`arc::snap`]).
     pointer: u8,
-    /// The pointer as drawn, easing towards `pointer`.
-    pointer_drawn: f32,
+    /// The panel's last pointer value, for the snapping's hysteresis.
+    pointer_raw: u8,
+    /// The beam's angle as drawn (radians, up is positive), easing towards the pointer's.
+    beam: f32,
+    beam_glow: arc::BeamGlow,
     menu_counts: i32,
     queue: Vec<QueueEntry>,
     now: Option<NowPlaying>,
@@ -296,7 +302,9 @@ impl Ui {
             stacks: Vec::new(),
             zones,
             pointer: 64,
-            pointer_drawn: 64.0,
+            pointer_raw: 64,
+            beam: arc::angle(64),
+            beam_glow: arc::BeamGlow::default(),
             menu_counts: 0,
             queue: Vec::new(),
             now: None,
@@ -367,7 +375,38 @@ impl Ui {
         if self.idle_now_playing {
             return 0;
         }
-        self.zones.iter().position(|z| (z.lo..=z.hi).contains(&self.pointer)).unwrap_or(0)
+        self.zone_at(self.pointer)
+    }
+
+    /// The zone the stock UI shows with the (snapped) pointer at `p`: now-playing once the beam is
+    /// off the arc, otherwise the label nearest the beam.
+    fn zone_at(&self, p: u8) -> usize {
+        let a = arc::angle(p);
+        let labelled = self.labelled_zones();
+        if labelled.is_empty() || a < arc::BELOW_ARC {
+            return 0;
+        }
+        if a > arc::ABOVE_ARC {
+            return self.zones.len() - 1;
+        }
+        // labels are listed top first, zones bottom first
+        let from_top = arc::label_index(a, arc::label_angles(labelled.len()));
+        labelled[labelled.len() - 1 - from_top]
+    }
+
+    /// The zones with a label on the arc, bottom first.
+    fn labelled_zones(&self) -> Vec<usize> {
+        (0..self.zones.len()).filter(|i| self.zones[*i].kind != ViewKind::NowPlaying).collect()
+    }
+
+    /// The panel's pointer value as the stock uses it, after `raw` arrives.
+    fn snapped(&self, raw: u8) -> u8 {
+        arc::snap(raw, self.pointer_raw)
+    }
+
+    fn set_pointer(&mut self, raw: u8) {
+        self.pointer = self.snapped(raw);
+        self.pointer_raw = raw;
     }
 
     pub fn zone(&self) -> &Zone {
@@ -467,8 +506,8 @@ impl Ui {
             // first touch does not also scroll.
             fx.push(Effect::Backlight(true));
             if let Input::Pointer(p) = input {
-                self.pointer = p;
-                self.pointer_drawn = p as f32;
+                self.set_pointer(p);
+                self.beam = arc::angle(self.pointer);
             }
             return fx;
         }
@@ -478,7 +517,7 @@ impl Ui {
         match input {
             Input::Pointer(p) => {
                 self.idle_now_playing = false;
-                self.pointer = p;
+                self.set_pointer(p);
                 if self.zone_index() != before {
                     fx.push(Effect::Click);
                 }
@@ -756,23 +795,30 @@ impl Ui {
         }
         // One frame after the last one drawn, so a caller that checks "is it due yet" at the
         // deadline finds it due.
-        let soon = Some(self.last_frame.unwrap_or(now) + Duration::from_micros(16_667));
+        let next = self.last_frame.unwrap_or(now) + Duration::from_micros(16_667);
+        let soon = Some(next);
         // Judged by the last frame drawn, not by `now`: the frame that shows the end of a fade
         // is still owed when the caller asks after the fade's end.
         let drawn = self.last_frame.unwrap_or(Time::ZERO);
         let moving = self.level().is_some_and(|l| (l.scroll - l.cursor as f32).abs() > 0.002)
             || self.context.is_some_and(|c| (self.context_scroll - c as f32).abs() > 0.002)
             || self.switch.is_some()
-            || (self.pointer_drawn - self.pointer as f32).abs() > 0.01;
+            || self.beam != arc::angle(self.pointer);
         if moving {
             return soon;
         }
+        // The beam dims a second after it stops, while the arc is showing.
+        let glow =
+            if self.zones[self.zone_index()].kind == ViewKind::NowPlaying { None } else { self.beam_glow.next_change(next) };
         let volume_end = self.volume_shown_until + VOLUME_FADE;
-        if self.volume_shown_until > Time::ZERO && drawn < volume_end {
-            return if now < self.volume_shown_until { Some(self.volume_shown_until) } else { soon };
-        }
+        let volume = (self.volume_shown_until > Time::ZERO && drawn < volume_end).then_some(if now < self.volume_shown_until {
+            self.volume_shown_until
+        } else {
+            next
+        });
         let letter_end = self.last_step + LETTER_HOLD;
-        (drawn < letter_end && self.level().is_some_and(|l| l.alphabetical)).then_some(letter_end)
+        let letter = (drawn < letter_end && self.level().is_some_and(|l| l.alphabetical)).then_some(letter_end);
+        [volume, letter, glow].into_iter().flatten().min()
     }
 
     /// The next timer [`Ui::tick`] needs, if any.
@@ -986,11 +1032,11 @@ impl Ui {
         if let Some(c) = self.context {
             ease(&mut self.context_scroll, c as f32);
         }
-        let kp = 1.0 - (-dt / 0.03).exp();
-        self.pointer_drawn += (self.pointer as f32 - self.pointer_drawn) * kp;
-        if (self.pointer_drawn - self.pointer as f32).abs() <= 0.01 {
-            self.pointer_drawn = self.pointer as f32;
-        }
+        // the beam, as SelectorBeamControl_Update does it
+        let target = arc::angle(self.pointer);
+        let moving = self.beam != target;
+        self.beam = arc::ease(self.beam, target, dt);
+        self.beam_glow.step(moving, now, dt);
         if self.switch.is_some_and(|sw| now >= sw.start + FADE_OUT + FADE_BLACK + FADE_IN) {
             self.switch = None;
         }
@@ -1341,13 +1387,17 @@ mod tests {
     #[test]
     fn scrolling_animates_then_settles() {
         let mut ui = ui_at(76);
-        ui.scene(ms(0));
-        ui.input(Input::MenuWheel(75), ms(1));
-        assert!(ui.next_frame(ms(1)).is_some());
-        for f in 0..60 {
+        // let the beam reach the pointer and dim
+        for f in 0..180 {
             ui.scene(ms(17 * f));
         }
-        assert_eq!(ui.next_frame(ms(1100)), None);
+        assert_eq!(ui.next_frame(ms(3100)), None);
+        ui.input(Input::MenuWheel(75), ms(3101));
+        assert!(ui.next_frame(ms(3101)).is_some());
+        for f in 0..60 {
+            ui.scene(ms(3101 + 17 * f));
+        }
+        assert_eq!(ui.next_frame(ms(4200)), None);
     }
 
     #[test]
@@ -1361,7 +1411,8 @@ mod tests {
         assert!(black < before, "content is gone while black ({before} -> {black})");
         let back = texts(&ui.scene(ms(1500)));
         assert!(back > black, "content is back after the fade ({black} -> {back})");
-        assert!(ui.next_frame(ms(1500)).is_none());
+        // nothing more until the beam dims, a second after it stopped
+        assert!(ui.next_frame(ms(1500)).is_some_and(|t| t >= ms(2000)));
     }
 
     #[test]
@@ -1374,7 +1425,53 @@ mod tests {
         let due = ui.next_frame(ms(1445)).expect("one more frame");
         assert!(due <= ms(1445));
         ui.scene(ms(1445));
-        assert_eq!(ui.next_frame(ms(1460)), None);
+        assert!(ui.next_frame(ms(1460)).is_some_and(|t| t >= ms(2000)), "only the beam's dimming is left");
+    }
+
+    #[test]
+    fn the_pointer_picks_zones_as_the_stock_does() {
+        // N.MUSIC as captured on 27 Nov 2026 (ui/INDEX.md): 0-15 and 100+ now-playing
+        for (p, name) in [
+            (5u8, "NOW PLAYING"),
+            (34, "QUEUE"),
+            (52, "FAVOURITES"),
+            (62, "TITLES"),
+            (70, "ALBUMS"),
+            (76, "ARTISTS"),
+            (81, "COVERS"),
+            (90, "MODE"),
+        ] {
+            assert_eq!(ui_at(p).zone().name, name, "pointer {p}");
+        }
+        let top = ui_at(110);
+        assert_eq!(top.zone_index(), top.zones.len() - 1);
+        // every zone's own pointer value shows it
+        for set in [n_music_zones(), settings_zones(false), settings_zones(true)] {
+            let mut ui = ui_at(64);
+            ui.zones = set.clone();
+            for i in 0..set.len() {
+                assert_eq!(ui.zone_at(zone_pointer(&set, i)), i, "{}", set[i].name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_beam_eases_and_snaps_off_the_top() {
+        let mut ui = ui_at(64);
+        ui.scene(ms(0));
+        ui.input(Input::Pointer(94), ms(1));
+        ui.input(Input::Pointer(96), ms(2)); // moving up past 94: off the top
+        assert_eq!(ui.pointer, arc::TOP);
+        ui.scene(ms(17));
+        assert!(ui.beam < arc::angle(arc::TOP));
+        for f in 2..40 {
+            ui.scene(ms(17 * f));
+        }
+        assert_eq!(ui.beam, arc::angle(arc::TOP));
+        ui.input(Input::Pointer(110), ms(690));
+        ui.input(Input::Pointer(100), ms(700)); // coming back down: not snapped
+        assert_eq!(ui.pointer, 100);
+        assert_eq!(ui.zone().name, "MODE");
     }
 
     #[test]
