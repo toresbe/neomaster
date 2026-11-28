@@ -8,6 +8,9 @@
 //!
 //!     MA_TOKEN=... cargo run --release -p player --example latency_probe -- \
 //!         <media_url_1> <media_url_2> [trials] [lead_ms]
+//!
+//! `PROBE_SKIP=index` skips with `play_index(current + 1)` instead of MA's `next`, which waits a
+//! fixed second before it acts (as neomaster's NEXT now does).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -87,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ma_url = std::env::var("MA_URL").unwrap_or("http://192.168.2.238:8095".into());
     let ss_url = std::env::var("SENDSPIN_URL").unwrap_or("ws://192.168.2.238:8927/sendspin".into());
     let client_id = "neomaster-latency-probe".to_string();
+    let by_index = std::env::var("PROBE_SKIP").is_ok_and(|v| v == "index");
 
     let ss = ProtocolClientBuilder::builder()
         .client_id(client_id.clone())
@@ -162,7 +166,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let s = first_after(&log.lock(), t);
         let from = log.lock().len();
         let t2 = Instant::now();
-        ma.next(&queue).await?;
+        if by_index {
+            // MA keeps the played items in the queue: the next one is current + 1
+            let current = ma.queue(&queue).await?.current_index.unwrap_or(0);
+            ma.play_index(&queue, current + 1).await?;
+        } else {
+            ma.next(&queue).await?;
+        }
+        let next_reply = t2.elapsed();
         tokio::time::sleep(Duration::from_secs(4)).await;
         let k = first_after_restart(&log.lock(), from, t2);
         let show = |x: Option<(Duration, Option<Duration>)>| match x {
@@ -170,7 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some((a, None)) => format!("first buffer {}  (clock not synced)", ms(a)),
             None => "no audio".into(),
         };
-        println!("trial {i}: play (reply {}) {} | next {}", ms(reply), show(s), show(k));
+        println!("trial {i}: play (reply {}) {} | next (reply {}) {}", ms(reply), show(s), ms(next_reply), show(k));
         if let Some((_, Some(x))) = s {
             starts.push(x);
         }

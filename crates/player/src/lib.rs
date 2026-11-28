@@ -19,7 +19,10 @@
 //! Measured on the home server against MA 2.10.13 with
 //! `examples/latency_probe.rs` (silent output, LAN WAV source): with a
 //! 200 ms lead, sound is scheduled ~290 ms after `play_media`; after
-//! `next`, ~1.26 s, of which ~1.05 s is MA preparing the next stream.
+//! `next`, ~1.26 s, of which 1.00 s is a fixed wait in MA's `next` and
+//! `previous` (neomaster skips with `play_index` instead). On the BM5 the
+//! ALSA ring was ~1.5 s with the device's default period, hence
+//! [`PlayerConfig::buffer_frames`].
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,6 +34,9 @@ use sendspin::protocol::messages::{AudioFormatSpec, PlayerState, PlayerStateComm
 use sendspin::sync::ClockSync;
 use sendspin::ProtocolClientBuilder;
 use tokio::sync::{mpsc, watch};
+
+/// Default ALSA period, see [`PlayerConfig::buffer_frames`].
+pub const DEFAULT_BUFFER_FRAMES: u32 = 2048;
 
 #[derive(Debug, Clone)]
 pub struct PlayerConfig {
@@ -46,6 +52,12 @@ pub struct PlayerConfig {
     /// How far ahead MA schedules audio. Lower starts sooner but leaves
     /// less margin for a busy C7; 200 ms worked on the LAN.
     pub lead_ms: u32,
+    /// ALSA period in frames (the ring buffer is two periods). `None` lets
+    /// the device choose, which on the BM5's VT82xx is 32768 frames, a
+    /// ~1.5 s ring: everything already in it still plays after a skip.
+    /// 2048 frames is ~93 ms of ring at 44.1 kHz, plenty on a wired LAN.
+    /// If the device refuses the size, the player falls back to its default.
+    pub buffer_frames: Option<u32>,
     /// Formats offered to MA, most preferred first. PCM only by default:
     /// no decoding on the C7, ~1.4 Mbit/s on the LAN.
     pub formats: Vec<AudioFormatSpec>,
@@ -60,6 +72,7 @@ impl PlayerConfig {
             name: name.into(),
             device: None,
             lead_ms: 200,
+            buffer_frames: Some(DEFAULT_BUFFER_FRAMES),
             formats: vec![pcm(44_100), pcm(48_000)],
         }
     }
@@ -163,11 +176,23 @@ fn open_output(
 ) -> Result<(), String> {
     let _ = session.release_output();
     drop(output.take());
-    let mut pc = SyncedPlayerConfig::new();
-    if let Some(name) = &cfg.device {
-        pc.device = Some(find_device(name)?);
-    }
-    let player = SyncedPlayer::new(format.clone(), clock.clone(), pc).map_err(|e| e.to_string())?;
+    let new_config = || -> Result<SyncedPlayerConfig, String> {
+        let mut pc = SyncedPlayerConfig::new();
+        if let Some(name) = &cfg.device {
+            pc.device = Some(find_device(name)?);
+        }
+        Ok(pc)
+    };
+    let mut pc = new_config()?;
+    pc.buffer_size = cfg.buffer_frames;
+    let player = match SyncedPlayer::new(format.clone(), clock.clone(), pc) {
+        Ok(p) => p,
+        Err(e) if cfg.buffer_frames.is_some() => {
+            log::warn!("sendspin: a {}-frame ALSA period failed ({e}); using the device default", cfg.buffer_frames.unwrap_or(0));
+            SyncedPlayer::new(format.clone(), clock.clone(), new_config()?).map_err(|e| e.to_string())?
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     session.begin_output_install().and_then(|permit| permit.install(player.control())).map_err(|e| e.to_string())?;
     *output = Some(player);
     Ok(())
