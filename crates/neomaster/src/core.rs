@@ -3,7 +3,6 @@
 //! render thread. Nothing here blocks, sleeps or touches a device, so a run can be replayed from
 //! its event log.
 
-use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use a_aux::AuxSource;
@@ -11,6 +10,9 @@ use bs5_panel::{Decoder, Output, Report};
 use log::{debug, info};
 use masterlink::{LinkRole, LocalSource, TrackInfo};
 use render::Scene;
+
+/// Where the core puts each new scene for the render thread, with the moment it was made.
+pub type SceneTx = render::mailbox::Sender<(Instant, Scene)>;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::sleep_until;
@@ -146,7 +148,7 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
     link_track: Option<(Time, TrackInfo)>,
     link: Link,
     pc2_out: Q,
-    scenes: std_mpsc::SyncSender<Scene>,
+    scenes: SceneTx,
     epoch: Instant,
     /// The debug stream ([`Tap::global`] unless [`Core::with_tap`] says otherwise).
     tap: Tap,
@@ -188,7 +190,7 @@ pub struct Core<P: PanelOut, A: AuxOut, Q: Pc2Out> {
 }
 
 impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
-    pub fn new(mut ui: Ui, panel_out: P, aux_out: A, link: Link, pc2_out: Q, scenes: std_mpsc::SyncSender<Scene>) -> Self {
+    pub fn new(mut ui: Ui, panel_out: P, aux_out: A, link: Link, pc2_out: Q, scenes: SceneTx) -> Self {
         let mut link = link;
         if link.role() == LinkRole::SourceCenter {
             ui.set_volume(NEUTRAL_VOLUME);
@@ -818,8 +820,8 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
     }
 
     fn draw(&mut self, now: Time) {
-        // A full channel means the render thread is behind; it only wants the newest scene anyway.
-        let _ = self.scenes.try_send(self.ui.scene(now));
+        // Replaces a scene the render thread has not taken yet: it only wants the newest.
+        let _ = self.scenes.send((Instant::now(), self.ui.scene(now)));
     }
 
     /// When the UI next needs a tick or a frame.
@@ -1220,7 +1222,7 @@ mod tests {
 
     /// Run `events` through a core in `role` with the presets above; return the N.RADIO commands.
     async fn radio_run(role: LinkRole, events: Vec<Event>) -> Vec<RadioCmd> {
-        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (scene_tx, _scene_rx) = render::mailbox::channel();
         let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
         let (radio_tx, mut radio_rx) = mpsc::unbounded_channel::<RadioCmd>();
         let link = Link::new(link::Config::new(role));
@@ -1326,7 +1328,7 @@ mod tests {
     /// release sends STANDBY; picking another source drops a running session.
     #[test]
     fn airplay_session_takes_and_releases_the_source() {
-        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (scene_tx, _scene_rx) = render::mailbox::channel();
         let (pc2_tx, mut pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
         let link = Link::new(link::Config::new(LinkRole::SourceCenter));
         let log = AirPlayLog::default();
@@ -1398,7 +1400,7 @@ mod tests {
     #[test]
     fn a_aux_shows_only_its_name() {
         for role in [LinkRole::AudioMaster, LinkRole::SourceCenter] {
-            let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+            let (scene_tx, _scene_rx) = render::mailbox::channel();
             let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
             let link = Link::new(link::Config::new(role));
             let mut core =
@@ -1415,7 +1417,7 @@ mod tests {
     /// Run `events` through a core in `role` with the made-up library and N.MUSIC wired to a
     /// channel; return the Music Assistant commands it sent.
     async fn music_run(role: LinkRole, events: Vec<Event>) -> Vec<MusicCmd> {
-        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (scene_tx, _scene_rx) = render::mailbox::channel();
         let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
         let (music_tx, mut music_rx) = mpsc::unbounded_channel::<MusicCmd>();
         let link = Link::new(link::Config::new(role));
@@ -1590,7 +1592,7 @@ mod tests {
     /// since resuming would resume the station.
     #[tokio::test]
     async fn n_music_and_n_radio_hand_the_queue_over() {
-        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (scene_tx, _scene_rx) = render::mailbox::channel();
         let (pc2_tx, _pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
         let (music_tx, mut music_rx) = mpsc::unbounded_channel::<MusicCmd>();
         let (radio_tx, mut radio_rx) = mpsc::unbounded_channel::<RadioCmd>();
@@ -1640,7 +1642,7 @@ mod tests {
     async fn injected_input_takes_the_real_path_and_is_streamed() {
         let tap = Tap::new();
         let mut rx = tap.subscribe().unwrap();
-        let (scene_tx, _scene_rx) = std_mpsc::sync_channel(64);
+        let (scene_tx, _scene_rx) = render::mailbox::channel();
         let (pc2_tx, mut pc2_rx) = mpsc::unbounded_channel::<Pc2Cmd>();
         let link = Link::new(link::Config::new(LinkRole::SourceCenter));
         let core =

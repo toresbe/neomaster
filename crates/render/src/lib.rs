@@ -8,8 +8,10 @@
 //! any X desktop, which is what `neomaster --sim` uses. A framebuffer blitter is the fallback if
 //! openchrome's acceleration disappoints (milestone M0 decides).
 
+pub mod damage;
 pub mod glyphs;
 pub mod image;
+pub mod mailbox;
 #[cfg(feature = "xrender")]
 pub mod xrender;
 
@@ -88,6 +90,33 @@ pub struct ImageDraw {
     /// glow textures that the stock UI tints).
     pub tint: Option<Color>,
     pub angle: f32,
+}
+
+impl ImageDraw {
+    /// The screen area the image covers, and the affine transform from that area's pixels to
+    /// image pixels (`[a, b, c, d, e, f]`: `ix = a*x + b*y + c`, `iy = d*x + e*y + f`), which is
+    /// the direction XRender transforms go.
+    pub fn placement(&self) -> (Rect, [f64; 6]) {
+        let d = self;
+        let sx = d.src.w as f64 / d.dst.w as f64;
+        let sy = d.src.h as f64 / d.dst.h as f64;
+        if d.angle == 0.0 {
+            return (d.dst, [sx, 0.0, d.src.x as f64, 0.0, sy, d.src.y as f64]);
+        }
+        let (cx, cy) = (d.dst.x as f64 + d.dst.w as f64 / 2.0, d.dst.y as f64 + d.dst.h as f64 / 2.0);
+        let (s, c) = (d.angle as f64).sin_cos();
+        let (hw, hh) = (d.dst.w as f64 / 2.0, d.dst.h as f64 / 2.0);
+        let ex = (hw * c).abs() + (hh * s).abs();
+        let ey = (hw * s).abs() + (hh * c).abs();
+        let (bx, by) = ((cx - ex).floor(), (cy - ey).floor());
+        // area pixel (i, j) -> screen (bx + i, by + j) -> rotate by -angle about the centre
+        // -> dst-local -> image
+        let (ox, oy) = (bx - cx, by - cy);
+        let (icx, icy) = (d.src.x as f64 + d.src.w as f64 / 2.0, d.src.y as f64 + d.src.h as f64 / 2.0);
+        let m = [c * sx, s * sx, (c * ox + s * oy) * sx + icx, -s * sy, c * sy, (-s * ox + c * oy) * sy + icy];
+        let area = Rect::new(bx as i32, by as i32, (2.0 * ex).ceil() as u32 + 1, (2.0 * ey).ceil() as u32 + 1);
+        (area, m)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

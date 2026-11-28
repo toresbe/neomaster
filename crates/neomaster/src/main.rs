@@ -16,7 +16,6 @@ mod sim;
 mod sim_pc2;
 
 use std::process::ExitCode;
-use std::sync::mpsc as std_mpsc;
 
 use std::path::PathBuf;
 
@@ -138,8 +137,8 @@ fn headless(startup: Startup, debug_cfg: &debug::Config) -> Result<(), Box<dyn s
     debug::server::start(&rt, debug_cfg, event_tx.clone(), debug_hello("headless", role, Pc2Device::Usb))?;
     let pc2 = spawn_pc2(&rt, Pc2Device::Usb, role, event_tx.clone());
     // No screen: scenes go nowhere.
-    let (scene_tx, scene_rx) = std_mpsc::sync_channel(1);
-    std::thread::spawn(move || while scene_rx.recv().is_ok() {});
+    let (scene_tx, scene_rx) = render::mailbox::channel();
+    std::thread::spawn(move || while scene_rx.recv().is_some() {});
     struct NoPanel;
     impl core::PanelOut for NoPanel {
         fn write(&mut self, _: [u8; 2]) {}
