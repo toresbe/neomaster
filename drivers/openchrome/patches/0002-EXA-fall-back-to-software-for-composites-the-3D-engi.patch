@@ -1,7 +1,7 @@
-From 19b16d3dba7d4171533114bd1a09566a3801a5d5 Mon Sep 17 00:00:00 2001
+From 58c43d13579437303a9a55b07826e6715c200ead Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 27 Nov 2026 23:40:30 +0000
-Subject: [PATCH 1/2] EXA: fall back to software for composites the 3D engine
+Subject: [PATCH 2/3] EXA: fall back to software for composites the 3D engine
  can't draw
 
 viaExaCheckComposite_H2/_H6 never looked at the picture transform,

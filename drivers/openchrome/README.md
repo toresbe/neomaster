@@ -1,7 +1,9 @@
 # OpenChrome X driver patches
 
 Patches for Debian's `xserver-xorg-video-openchrome` (upstream 0.6.0), the X
-driver the BM5's VIA CX700 uses on bookworm. Neomaster's XRender backend
+driver the BM5's VIA CX700 uses on bookworm. Stock 0.6.0 crashes at start-up
+on the BM5 under bookworm's Xorg 21.1, so patch 0001 is needed to get X
+running at all. Neomaster's XRender backend
 (`crates/render/src/xrender.rs`) scales cover art and rotates the pointer beam
 with Render picture transforms and bilinear filtering. The stock driver gets
 those wrong. Background and the wider survey are in
@@ -9,18 +11,21 @@ those wrong. Background and the wider survey are in
 
 | Patch | What it does | Default |
 | --- | --- | --- |
-| `0001` | EXA composite falls back to software for anything the 3D engine can't draw: picture transforms, convolution filters, RepeatPad/Reflect, repeating pictures that aren't a power of two in size, and masks without a drawable | Always on |
-| `0002` | Affine transforms (scale, rotate, skew) with nearest or bilinear filtering on the UniChrome 3D engine | Off; enable with `Option "ExaTransform" "true"` |
+| `0001` | Names the panel's native mode, which the driver generates itself because the BM5's panel has no EDID. Without a name, Xorg 21.1 segfaults in `xf86ProbeOutputModes` | Always on |
+| `0002` | EXA composite falls back to software for anything the 3D engine can't draw: picture transforms, convolution filters, RepeatPad/Reflect, repeating pictures that aren't a power of two in size, and masks without a drawable | Always on |
+| `0003` | Affine transforms (scale, rotate, skew) with nearest or bilinear filtering on the UniChrome 3D engine | Off; enable with `Option "ExaTransform" "true"` |
 
-**Without 0001,** a transformed source over 400 pixels is drawn as an
-unscaled crop of the image. Patch 0001 alone makes neomaster render correctly,
-with software scaling. Patch 0002 moves the scaling to the GPU.
+**Without 0002,** a transformed source over 400 pixels is drawn as an
+unscaled crop of the image. Patches 0001 and 0002 make neomaster render
+correctly, with software scaling. Patch 0003 moves the scaling to the GPU.
 
 ## Status
 
-Neither patch has run on hardware yet. Offline checks so far:
+0001 runs on the BM5 (2026-11-28, as Debian package `1:0.6.0-5+nm1`). X comes
+up in UMS with EXA enabled, and FP-1 runs at 1024x768. 0002 and 0003 haven't
+run on hardware yet. Offline checks so far:
 
-- Both patches apply to the 0.6.0 tarball and build against Xorg 21.1
+- All three patches apply to the 0.6.0 tarball and build against Xorg 21.1
   without new warnings.
 - `test/run_harness.sh` drives `via_3d.c` without hardware. Untransformed
   composites produce byte-for-byte the same command stream as before. The
@@ -34,7 +39,17 @@ Hardware facts the code relies on, all still to be confirmed with rendercheck:
 - GL-style sampling at pixel centres, so no half-texel offset is applied.
 - Clamp wrap mode.
 
-## How 0002 works
+## The start-up crash (0001)
+
+The BM5's LVDS panel has no DDC channel, so `via_lvds_get_modes` makes the
+native mode with `xf86CVTMode()`. On Debian's Xorg 21.1.7 that mode has no
+name. `xf86ProbeOutputModes` then calls `strcmp` on the NULL name while
+pruning duplicate modes (the inlined `xf86SortModes`), at
+`xf86ProbeOutputModes+0x62e` in bookworm's Xorg binary. The fix calls
+`xf86SetModeDefaultName()` on the mode. Upstream openchrome main has the
+same code.
+
+## How 0003 works
 
 - `via3DEmitQuad` writes each texture's source position as an affine function
   of the destination position and derives per-vertex texture coordinates from
@@ -72,11 +87,10 @@ dpkg-buildpackage -b -uc -us
 sudo dpkg -i ../xserver-xorg-video-openchrome_*+neomaster*_i386.deb
 ```
 
-If the build fails with "multiple definition of `iga1_crtc_funcs`", build with
-`DEB_CFLAGS_APPEND=-fcommon dpkg-buildpackage -b -uc -us`. 0.6.0 predates
-GCC 10's `-fno-common` default.
+Debian's source already carries the GCC 10 `-fno-common` fix. If you build
+the plain upstream 0.6.0 tarball instead, configure it with `CFLAGS=-fcommon`.
 
-To enable 0002, add `/etc/X11/xorg.conf.d/20-openchrome.conf`:
+To enable 0003, add `/etc/X11/xorg.conf.d/20-openchrome.conf`:
 
 ```
 Section "Device"
@@ -115,10 +129,11 @@ To roll back, delete that file. To remove the patches as well, run
 ## Upstream
 
 The X driver has no active upstream. Kevin Brace's main branch was last
-touched in 2023, and the freedesktop repos are archived. Patch 0001 is a
-plain bug fix suitable for Debian (salsa.debian.org/xorg-team/driver/xserver-xorg-video-openchrome)
-and the openchrome-devel list. 0002 should follow once rendercheck passes on
-hardware.
+touched in 2023, and the freedesktop repos are archived. Patches 0001 and
+0002 are plain bug fixes suitable for Debian (salsa.debian.org/xorg-team/driver/xserver-xorg-video-openchrome)
+and the openchrome-devel list. 0001 deserves a Debian bug, since stock
+bookworm openchrome can't start on any panel without EDID. 0003 should
+follow once rendercheck passes on hardware.
 
 `test/` holds the offline harness. Run
 `test/run_harness.sh <unpatched-0.6.0-tree> <patched-tree>` with

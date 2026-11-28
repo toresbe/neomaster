@@ -1,7 +1,7 @@
-From 521292ff8bc6545671ba07a77d41ea18172d834b Mon Sep 17 00:00:00 2001
+From 617b0ea3624b15398c60b782999f6fd9ff45332b Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 27 Nov 2026 23:43:26 +0000
-Subject: [PATCH 2/2] EXA: accelerate affine-transformed and bilinear
+Subject: [PATCH 3/3] EXA: accelerate affine-transformed and bilinear
  composites (H2 3D engine)
 
 The UniChrome texture unit can filter bilinearly (HTXnTB, sub-address
