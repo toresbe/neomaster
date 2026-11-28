@@ -1,13 +1,15 @@
 //! The layout, measured from the stock screen (1024x768) on 27 Nov 2026.
 //!
 //! Everything sits on circles about one centre, (1153, 384), just off the right edge:
-//! - the menu arc and its pointer at radius 893, the zone labels right-aligned 22 px left of it;
+//! - the menu arc and its pointer at radius 893, the zone labels at the stock label angles with
+//!   their centres at radius 923, right-aligned 22 px left of the arc;
 //! - list rows at radius 494 (the centre row at 499), one row per 10.4 degrees;
 //! - covers at radius 379 (centres), one per 19.65 degrees, 108 px in the centre and 81 px out;
 //! - the selected album's cover, artist and album in between, left edge on radius 839.
 //!
 //! Text is BeoFont (or the bundled stand-in) at 16 px, 18 px for the centre row and 30 px for
-//! the now-playing title. Labels are grey 126 and white when current; rows are white; the
+//! the now-playing title. Labels are grey 128, the current one the arc's colour, and the one at
+//! the beam goes white as the beam reaches it (see [`crate::arc`]); rows are white; the
 //! now-playing title is grey 140 and its caption grey 78.
 
 use std::f32::consts::PI;
@@ -24,13 +26,11 @@ const CY: f32 = 384.0;
 const ARC_R: f32 = 893.0;
 const ARC_X: i32 = 260;
 const LABEL_GAP: f32 = 22.0;
-/// The labels share out these spans of the arc (degrees, negative is up): the upper half of the
-/// zones from just above the middle to the top, the lower half from just below it to the bottom.
-const TOP_SPAN: (f32, f32) = (-4.4, -23.2);
-const BOTTOM_SPAN: (f32, f32) = (4.3, 23.1);
-/// Degrees of arc per pointer step, measured in N.MUSIC; used beyond the outermost labels.
-const DEG_PER_STEP: f32 = 0.83;
-const ARC_LIMIT: f32 = 24.5;
+/// The labels' text centres are this far out along their angle (all seven N.MUSIC labels on the
+/// stock screen sit on it to the pixel).
+const LABEL_R: f32 = 923.0;
+/// The flare is drawn 96 px square (stock `SelectorBeamControl`, from the 177 px texture).
+const FLARE_SIZE: f32 = 96.0;
 
 const LIST_R: f32 = 494.0;
 const LIST_R_CENTRE: f32 = 499.0;
@@ -48,7 +48,7 @@ const CENTRE: f32 = 18.0;
 const NP_SIZE: u16 = 30;
 
 const WHITE: Color = Color::rgb(255, 255, 255);
-const LABEL_GREY: Color = Color::rgb(126, 126, 126);
+const LABEL_GREY: Color = Color::rgb(128, 128, 128);
 const ITEM_GREY: Color = Color::rgb(153, 153, 153);
 const NP_GREY: Color = Color::rgb(140, 140, 140);
 const CAPTION_GREY: Color = Color::rgb(78, 78, 78);
@@ -193,48 +193,13 @@ impl Ui {
         self.paint_volume(s, now);
     }
 
-    /// The label angle (degrees) of every zone that has a label, by zone index.
+    /// The label angle of every zone that has a label, by zone index: degrees in this file's
+    /// convention (positive is down), from the stock table for that many labels.
     fn label_angles(&self) -> Vec<(usize, f32)> {
-        let labelled: Vec<usize> = (0..self.zones.len()).filter(|i| self.zones[*i].kind != ViewKind::NowPlaying).collect();
-        let n = labelled.len();
-        let bottom = n / 2;
-        let top = n - bottom;
-        let spread = |span: (f32, f32), count: usize, k: usize| {
-            if count <= 1 {
-                span.0
-            } else {
-                span.0 + (span.1 - span.0) * k as f32 / (count - 1) as f32
-            }
-        };
-        labelled
-            .iter()
-            .enumerate()
-            .map(|(k, z)| {
-                // zones run from the lowest pointer (the bottom of the arc) upwards
-                let a = if k < bottom { spread(BOTTOM_SPAN, bottom, bottom - 1 - k) } else { spread(TOP_SPAN, top, k - bottom) };
-                (*z, a)
-            })
-            .collect()
-    }
-
-    /// Where the pointer sits on the arc, in degrees: through each label at its zone's middle
-    /// position, straight lines between, the measured slope beyond.
-    fn pointer_angle(&self, labels: &[(usize, f32)]) -> f32 {
-        let p = self.pointer_drawn;
-        let pts: Vec<(f32, f32)> =
-            labels.iter().map(|(z, a)| ((self.zones[*z].lo as f32 + self.zones[*z].hi as f32) / 2.0, *a)).collect();
-        let a = match pts.iter().position(|(zp, _)| *zp >= p) {
-            Some(0) => pts[0].1 + (pts[0].0 - p) * DEG_PER_STEP,
-            None => {
-                let last = pts[pts.len() - 1];
-                last.1 - (p - last.0) * DEG_PER_STEP
-            }
-            Some(i) => {
-                let (a, b) = (pts[i - 1], pts[i]);
-                a.1 + (b.1 - a.1) * (p - a.0) / (b.0 - a.0)
-            }
-        };
-        a.clamp(-ARC_LIMIT, ARC_LIMIT)
+        let labelled = self.labelled_zones();
+        let angles = crate::arc::label_angles(labelled.len());
+        // zones run bottom first, the table top first
+        labelled.iter().zip(angles.iter().rev()).map(|(z, a)| (*z, -a.to_degrees())).collect()
     }
 
     fn paint_arc(&mut self, s: &mut Scene, opacity: f32) {
@@ -250,9 +215,15 @@ impl Ui {
         });
         let labels = self.label_angles();
         let current = self.zone_index();
-        for (z, a) in &labels {
-            let y = CY + ARC_R * a.to_radians().sin();
-            let colour = if *z == current { WHITE } else { LABEL_GREY };
+        // the label the beam picks lights up as the beam nears it
+        let top_first = crate::arc::label_angles(labels.len());
+        let lit = labels.len().saturating_sub(1).saturating_sub(crate::arc::label_index(self.beam, top_first));
+        for (i, (z, a)) in labels.iter().enumerate() {
+            let y = CY + LABEL_R * a.to_radians().sin();
+            let up = -a.to_radians();
+            let base = if *z == current { crate::arc::colour_at(up) } else { LABEL_GREY };
+            let light = if i == lit { crate::arc::label_light(up - self.beam) } else { 0.0 };
+            let colour = crate::arc::mix(base, WHITE, light);
             s.text(
                 (arc_x(y) - LABEL_GAP).round() as i32,
                 (y + 6.0).round() as i32,
@@ -262,8 +233,9 @@ impl Ui {
                 self.zones[*z].name,
             );
         }
-        // the pointer: a beam along the radius and a white flare on the arc
-        let a = self.pointer_angle(&labels);
+        // the pointer: a beam along the radius, tinted with the arc's colour where it is, and a
+        // white flare on the arc
+        let a = -self.beam.to_degrees();
         let (px, py) = polar(ARC_R, a);
         let beam = self.assets.beam.clone();
         let angle = (py - CY).atan2(px - CX) + PI;
@@ -276,15 +248,15 @@ impl Ui {
                 beam.height,
             ),
             image: beam,
-            opacity,
+            opacity: opacity * self.beam_glow.value,
             blend: Blend::Add,
-            tint: None,
+            tint: Some(crate::arc::colour_at(self.beam)),
             angle,
         });
         let flare = self.assets.flare.clone();
         s.draw(ImageDraw {
             src: flare.rect(),
-            dst: rect_centred(px, py, 44.0),
+            dst: rect_centred(px, py, FLARE_SIZE),
             image: flare,
             opacity,
             blend: Blend::Add,
@@ -554,7 +526,7 @@ mod tests {
         let ys: Vec<(&str, i32)> = ui
             .label_angles()
             .into_iter()
-            .map(|(z, a)| (ui.zones[z].name, (CY + ARC_R * a.to_radians().sin()).round() as i32))
+            .map(|(z, a)| (ui.zones[z].name, (CY + LABEL_R * a.to_radians().sin()).round() as i32))
             .collect();
         // text centres on the stock screen
         let stock = [
@@ -568,7 +540,7 @@ mod tests {
         ];
         for ((name, y), (sname, sy)) in ys.iter().zip(stock) {
             assert_eq!(*name, sname);
-            assert!((y - sy).abs() <= 5, "{name} at {y}, stock {sy}");
+            assert!((y - sy).abs() <= 1, "{name} at {y}, stock {sy}");
         }
     }
 

@@ -27,8 +27,8 @@ pub struct Assets {
     pub arc: Arc<Image>,
     /// White glow at the pointer, drawn additively and scaled to about 44 px (ArcFlare.png).
     pub flare: Arc<Image>,
-    /// The soft blue beam through the pointer, along the arc's radius. Always drawn here: the
-    /// stock one is made in code, and no texture on the disk matches it.
+    /// The beam through the pointer, along the arc's radius: white, its shape in the alpha,
+    /// tinted with the arc's colour when drawn (SelectorBeam.png, 601x101).
     pub beam: Arc<Image>,
     /// The volume arc, white, tinted blue when drawn (VolumeLightArc.png, 198x560).
     pub volume_arc: Arc<Image>,
@@ -73,6 +73,7 @@ impl Assets {
         };
         png("Arc.png", TEXTURES, &mut a.arc);
         png("ArcFlare.png", TEXTURES, &mut a.flare);
+        png("SelectorBeam.png", TEXTURES, &mut a.beam);
         png("VolumeLightArc.png", TEXTURES, &mut a.volume_arc);
         png("LargeCover.png", DEFAULTS, &mut a.cover_large);
         png("MediumCover.png", DEFAULTS, &mut a.cover_medium);
@@ -88,7 +89,7 @@ impl Assets {
             }
         }
         a.stock_files = found;
-        info!("Stock UI assets: {found} of 7 found under {}", root.display());
+        info!("Stock UI assets: {found} of 8 found under {}", root.display());
         a
     }
 
@@ -146,13 +147,13 @@ fn draw_flare() -> Arc<Image> {
     })
 }
 
-/// The beam: Gaussian along (sigma 200 px) and across (sigma 15 px), peaking at rgb(0, 12, 42)
-/// once added to black, as measured through the pointer on the stock screen.
+/// The beam: white, Gaussian along (sigma 220 px) and across (sigma 19 px) in the alpha, peaking
+/// at 66, the profile of the stock SelectorBeam.png.
 fn draw_beam() -> Arc<Image> {
-    Image::from_fn(640, 96, |x, y| {
-        let (t, s) = (x - 320.0, y - 48.0);
-        let a = (-(t / 200.0).powi(2)).exp() * (-(s / 15.0).powi(2)).exp() * (42.0 / 255.0);
-        [0, 73, 255, byte(255.0 * a)]
+    Image::from_fn(601, 101, |x, y| {
+        let (t, s) = (x - 300.0, y - 50.0);
+        let a = (-(t / 220.0).powi(2)).exp() * (-(s / 19.0).powi(2)).exp() * 66.0;
+        [255, 255, 255, byte(a)]
     })
 }
 

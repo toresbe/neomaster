@@ -169,12 +169,10 @@ impl Ui {
         }
         if let Input::Pointer(p) = input {
             // Leaving a section closes its picker; the normal UI moves the pointer and fades.
-            let before = self.zone_index();
-            let was = std::mem::replace(&mut self.pointer, p);
-            if self.zone_index() != before {
+            let after = if self.idle_now_playing { 0 } else { self.zone_at(self.snapped(p)) };
+            if after != self.zone_index() {
                 self.settings_menu.picker = None;
             }
-            self.pointer = was;
             return None;
         }
         let id = self.settings_section()?;
@@ -384,7 +382,8 @@ mod tests {
             (71, "MUSIC SERVICES"),
             (66, "MUSIC SERVICES"),
             (61, "SERVICE SETTINGS"),
-            (56, "PRODUCT INFO"),
+            // captured at 56 on the way up; the stock boundary is at 55.6
+            (55, "PRODUCT INFO"),
             (52, "PRODUCT INFO"),
             (46, "NETWORK INFO"),
             (41, "NETWORK SETTINGS"),

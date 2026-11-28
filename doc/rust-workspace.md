@@ -111,6 +111,21 @@ promiscuous mode), `DecodedTelegram` and its subclasses, the ANSI pretty-printer
 (`analysis.cpp`, `pprint.cpp`) and `utils/pcap_reader`. The USB I/O (`pc2_usb_io.*`) comes back
 as a thin nusb adapter in M4.
 
+## The pointer arc
+
+`ui::arc` is the stock mapping, read out of BeoSound5.exe (`A18SelectorLayer_OnBeamMove`
+0x512dfa, `SelectorBeamControl_Update` 0x41875a, `SelectorListControl` 0x419e03). The panel's
+pointer byte is snapped at the ends with hysteresis (below 30 it drops to 0 when moving down or
+below 20; above 94 it jumps to 125 when moving up or above 105), then mapped linearly: angle =
+p × 1.81246/125 − 0.91820 rad, 0.83° per step, up positive. The drawn beam eases towards it by
+min(20·dt, 1) of the gap each frame. Past ±0.85 rad the beam is off the arc and the view is
+now-playing. The labels sit at fixed angles per label count (a stock table of up to 11, top
+first; N.MUSIC's 7 are 22.42°, 16.10°, 10.11°, 4.22°, −4.16°, −13.09°, −22.35°), text centres at
+radius 923 about (1153, 384); the beam picks the nearest one. The beam is SelectorBeam.png tinted
+from cyan (bottom) to blue (top) over ±0.45 rad, at opacity 0.9 while moving and 0.6 from a
+second after it stops; the flare is ArcFlare.png at 96 px. The current view's label takes the
+arc's colour and the label at the beam goes towards white as cos(20·distance), dark past 4.5°.
+
 ## The simulator
 
 `neomaster --sim` opens the screen as a window and turns keys into the same 6-byte HID reports
@@ -250,7 +265,7 @@ permutation. The MODE list follows the names (for example A.MEM instead of N.MUS
 **The menu.** GO on SETTINGS in the MODE list opens 7 sections; RIGHT LEFT RIGHT LEFT, then GO on
 SETTINGS, opens the hidden menu with 9 (as on the stock BM5). `settings::menu` builds the
 sections from the settings and the machine facts (uptime, storage, addresses, versions, CD drive);
-`ui::settings_zones` puts them on the arc (the hidden menu's zone boundaries fitted to the
+`ui::settings_zones` puts them on the arc (at the stock label angles, which land on the
 captured pointer positions) and `ui::settings_menu` draws each section on the list curve and
 handles the grammar: the pointer picks a
 section, the wheel moves, LEFT opens a choice's picker or a submenu, GO (or LEFT) keeps a choice,

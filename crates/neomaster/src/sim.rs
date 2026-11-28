@@ -78,7 +78,8 @@ pub fn run(
     })?;
 
     // Start on ARTISTS. The first report tells the decoder where the pointer is.
-    let start = ui::n_music_zones().iter().find(|z| z.name == "ARTISTS").map(|z| (z.lo + z.hi) / 2).unwrap_or(64);
+    let zones = ui::n_music_zones();
+    let start = zones.iter().position(|z| z.name == "ARTISTS").map(|i| ui::zone_pointer(&zones, i)).unwrap_or(64);
     let panel = SimPanel { pointer: start, buttons: 0 };
     event_tx.send(panel.report(0, 0))?;
 
@@ -232,8 +233,8 @@ fn input_loop(
                     (_, '1'..='8') => {
                         // zone order on the arc, skipping the second now-playing range
                         let i = ch as usize - '1' as usize;
-                        if let Some(z) = zones.get(i) {
-                            panel.pointer = (z.lo + z.hi) / 2;
+                        if i < zones.len() {
+                            panel.pointer = ui::zone_pointer(&zones, i);
                             send(panel.report(0, 0))?;
                         }
                     }
