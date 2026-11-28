@@ -422,12 +422,10 @@ fn link_source_volume_is_beo4_keys() {
         Outputs::default()
     });
     h.clear();
-    h.act(|l, now| l.set_volume(48, now)); // 3 counts: not yet a key
-    assert!(h.sent(true).is_empty());
-    h.act(|l, now| l.set_volume(54, now)); // 9 counts: two keys, one left over
+    h.act(|l, now| l.set_volume(47, now)); // two UI steps: two keys
     assert_eq!(h.sent(true), vec![remote_key(beo4::VOL_UP), remote_key(beo4::VOL_UP)]);
     h.clear();
-    h.act(|l, now| l.set_volume(49, now)); // -5: +1 left over, so one key down and 0 left
+    h.act(|l, now| l.set_volume(46, now)); // one step down
     assert_eq!(h.sent(true), vec![remote_key(beo4::VOL_DOWN)]);
     assert!(h.sim.commands().iter().all(|c| c[0] != 0xeb), "no PC2 volume in this role");
 }

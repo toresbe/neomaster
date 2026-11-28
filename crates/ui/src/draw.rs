@@ -17,9 +17,7 @@ use std::sync::Arc;
 
 use render::{Align, Blend, Color, Font, Image, ImageDraw, Rect, Scene};
 
-use crate::{
-    Item, Root, Time, Ui, ViewKind, CONTEXT_ENTRIES, FADE_BLACK, FADE_IN, FADE_OUT, LETTER_HOLD, MAX_VOLUME, VOLUME_FADE,
-};
+use crate::{Item, Root, Time, Ui, ViewKind, CONTEXT_ENTRIES, FADE_BLACK, FADE_IN, FADE_OUT, LETTER_HOLD, VOLUME_FADE};
 
 const CX: f32 = 1153.0;
 const CY: f32 = 384.0;
@@ -53,7 +51,6 @@ const ITEM_GREY: Color = Color::rgb(153, 153, 153);
 const NP_GREY: Color = Color::rgb(140, 140, 140);
 const CAPTION_GREY: Color = Color::rgb(78, 78, 78);
 const MARKER: Color = Color::rgb(0, 64, 255);
-const VOLUME_TINT: Color = Color::rgb(0, 68, 176);
 
 fn polar(r: f32, deg: f32) -> (f32, f32) {
     let a = deg.to_radians();
@@ -491,26 +488,31 @@ impl Ui {
         s.text(55, 652, SMALL as u16, CAPTION_GREY.with_opacity(opacity), Align::Left, caption);
     }
 
-    /// The volume arc at the right edge, lit from the bottom up to the level (the stock level
-    /// mapping is not measured yet), held after each change and then faded.
+    /// The volume arc at the right edge, as the stock draws it ([`crate::volume`]): the arc
+    /// uncovered from the bottom by a turning mask (here a crop at the row where the mask's edge
+    /// crosses it), in the menu arc's colour at the beam; it fades in, stays after each change
+    /// and fades out.
     fn paint_volume(&self, s: &mut Scene, now: Time) {
         let end = self.volume_shown_until + VOLUME_FADE;
         if now >= end || self.volume_shown_until == Time::ZERO {
             return;
         }
-        let opacity = if now < self.volume_shown_until { 1.0 } else { (end - now).as_secs_f32() / VOLUME_FADE.as_secs_f32() };
+        let fade_in = now.saturating_sub(self.volume_shown_since).as_secs_f32() / crate::volume::FADE_IN.as_secs_f32();
+        let fade_out = if now < self.volume_shown_until { 1.0 } else { (end - now).as_secs_f32() / VOLUME_FADE.as_secs_f32() };
+        let opacity = fade_in.min(1.0) * fade_out;
         let img = self.assets.volume_arc.clone();
-        let (top, bottom) = (img.height as f32 * 0.035, img.height as f32 * 0.965);
-        let lit = self.volume as f32 / MAX_VOLUME as f32;
-        let from = (bottom - (bottom - top) * lit).floor().max(0.0) as u32;
+        let from = crate::volume::lit_from_row(self.volume_level_shown(now)).round().clamp(0.0, img.height as f32) as u32;
         let h = img.height - from;
+        if h == 0 {
+            return;
+        }
         s.draw(ImageDraw {
             src: Rect::new(0, from as i32, img.width, h),
             dst: Rect::new(863, 100 + from as i32, img.width, h),
             image: img,
             opacity,
             blend: Blend::Add,
-            tint: Some(VOLUME_TINT),
+            tint: Some(crate::arc::colour_at(self.beam)),
             angle: 0.0,
         });
     }

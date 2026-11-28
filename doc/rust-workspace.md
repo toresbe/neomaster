@@ -140,6 +140,19 @@ spin about 7 and 13. The stock "speed" is the mean of the last ten frames' movem
 uses the distance still to travel over the stock travel time (three times the gap since the
 previous report, 0.1–0.4 s), which is what that mean settles to.
 
+## The volume wheel and arc
+
+`ui::volume` follows BeoSound5.exe. For the wheel (`A18Controller_OnHwVolumeWheel` 0x4fbe3b), the counts add up. Once
+more than 3.47 have gathered and at least 100 ms have passed since the last step, their whole
+steps go out as one change, and the fraction stays. A change is at most 2 steps, and only 1 when
+the wheel had been still for a second. For the arc (`VolumeWheel` 0x42a57b), VolumeLightArc.png stays where it is,
+tinted with the menu arc's colour at the beam. A black mask (VolumeFadeOverlay.png) turns
+about a point by 19° + 144° × level to uncover it from the bottom. The level is 0 at volume 0, otherwise
+6.2 % + 81.6 % × volume/90, so even full volume leaves the top of the arc dark (lit to 55°
+above level, as in the 27 Nov capture). neomaster crops the texture at the row where the
+mask's edge crosses the arc. The level moves in 0.1 s; the arc fades in over 0.1 s, stays 2 s
+and fades out over 0.4 s.
+
 ## The simulator
 
 `neomaster --sim` opens the screen as a window and turns keys into the same 6-byte HID reports
@@ -219,7 +232,7 @@ What neomaster does:
 
 | Intent | Audio master | Link source |
 |---|---|---|
-| Volume wheel | PC2 `eb` absolute volume | Beo4 VOL UP `0x60` / DOWN `0x64` to the room's master, one per 4 counts (the UI volume is re-centred after each turn) |
+| Volume wheel | PC2 `eb` absolute volume | Beo4 VOL UP `0x60` / DOWN `0x64` to the room's master, one per UI volume step (the UI volume is re-centred after each turn) |
 | Pick a source | play it, `e3` tone + speakers on in B&O's order, `set_local_source` | its Beo4 key to the room's master (`0x94` N.MUSIC, `0x93` N.RADIO; A.AUX rides on N.MUSIC); play when the master connects us |
 | Short standby (S) | speakers off, then routing; `local_standby`; the player keeps going for link rooms still listening | Beo4 STANDBY `0x0c` to the room's master |
 | Long standby (Shift+S, held STANDBY on the remote) | `all_standby`: bus lock (`24` / IN 44 / `e4 01`), STANDBY_1 to ALL | the same from PC_1: `SourceCenter::all_standby` |
