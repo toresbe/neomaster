@@ -1253,8 +1253,8 @@ mod tests {
     #[test]
     fn wheel_counts_become_steps_with_one_click_each() {
         let mut ui = ui_at(76);
-        assert_eq!(ui.input(Input::MenuWheel(40), ms(1)), vec![]);
-        assert_eq!(ui.input(Input::MenuWheel(30), ms(400)), vec![Effect::Click]); // 70 counts = 1 row, slowly
+        assert_eq!(ui.input(Input::MenuWheel(4), ms(1)), vec![]);
+        assert_eq!(ui.input(Input::MenuWheel(3), ms(400)), vec![Effect::Click]); // 7 counts = 1 row, slowly
         assert_eq!(ui.level().unwrap().cursor, 1);
         ui.input(Input::MenuWheel(-3 * STEP), ms(3)); // clamps at the top
         assert_eq!(ui.level().unwrap().cursor, 0);

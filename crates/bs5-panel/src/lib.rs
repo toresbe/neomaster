@@ -32,9 +32,9 @@ pub const BUTTON_GO: u8 = 0x40;
 pub const BUTTON_LEFT: u8 = 0x20;
 pub const BUTTON_RIGHT: u8 = 0x10;
 
-/// Menu-wheel counts for one list row on a slow turn: the stock UI moves 1.5 units per count
-/// (more when the list is already moving fast) and a row is 105 units. See `ui::wheel`.
-pub const COUNTS_PER_STEP: i32 = 70;
+/// Menu-wheel counts for one list row on a slow turn: the stock UI turns 1.5 degrees per count
+/// (more when the list is already moving fast) and a row is 10.5 degrees. See `ui::wheel`.
+pub const COUNTS_PER_STEP: i32 = 7;
 /// Highest pointer arc position.
 pub const POINTER_MAX: u8 = 127;
 

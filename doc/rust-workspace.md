@@ -132,11 +132,11 @@ arc's colour and the label at the beam goes towards white as cos(20·distance), 
 0x446733, `AWheel_Rotate` 0x401926). Each panel report with a wheel delta becomes one
 NAV_WHEEL_UP (delta ≥ 0) or NAV_WHEEL_DOWN command carrying the raw count; there is no fixed
 counts-per-step. The count is scaled by a gain that depends on how fast the list is already
-moving: 1.5 units per count up to 7200 units/s, rising linearly to 15 at 21000. The units go
+moving: 1.5 degrees (15 units) per count up to 7200 units/s, rising linearly to 15 degrees at 21000. The units go
 into an accumulator that is cleared when the direction changes, and the list moves only by whole
 items, keeping the remainder: a row is 105 units (12 rows over 126°, at 10 units per degree), a
-cover 200 (10 over 200°). A slow turn therefore takes 70 counts per row and 133 per cover, a fast
-spin about 7 and 13. The stock "speed" is the mean of the last ten frames' movement; neomaster
+cover 200 (10 over 200°). A slow turn therefore takes 7 counts per row and 14 per cover; a fast
+spin moves more than a row per count. The stock "speed" is the mean of the last ten frames' movement; neomaster
 uses the distance still to travel over the stock travel time (three times the gap since the
 previous report, 0.1–0.4 s), which is what that mean settles to.
 
