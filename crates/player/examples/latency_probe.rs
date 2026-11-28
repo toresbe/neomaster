@@ -163,6 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let from = log.lock().len();
         let t2 = Instant::now();
         ma.next(&queue).await?;
+        let next_reply = t2.elapsed();
         tokio::time::sleep(Duration::from_secs(4)).await;
         let k = first_after_restart(&log.lock(), from, t2);
         let show = |x: Option<(Duration, Option<Duration>)>| match x {
@@ -170,7 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some((a, None)) => format!("first buffer {}  (clock not synced)", ms(a)),
             None => "no audio".into(),
         };
-        println!("trial {i}: play (reply {}) {} | next {}", ms(reply), show(s), show(k));
+        println!("trial {i}: play (reply {}) {} | next (reply {}) {}", ms(reply), show(s), ms(next_reply), show(k));
         if let Some((_, Some(x))) = s {
             starts.push(x);
         }
