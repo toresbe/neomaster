@@ -8,6 +8,7 @@ mod core;
 mod debug;
 mod link;
 mod music;
+mod panel_actor;
 mod pc2_actor;
 mod radio_actor;
 mod settings_rt;
@@ -25,13 +26,16 @@ use tokio::sync::{mpsc, watch};
 use crate::core::{Core, Event};
 use crate::link::{Link, Pc2Cmd};
 
-const USAGE: &str = "usage: neomaster --sim [--usb] [--role ROLE] [--config FILE] [DEBUG OPTIONS]
+const USAGE: &str = "usage: neomaster --sim [--usb] [--panel] [--role ROLE] [--config FILE] [DEBUG OPTIONS]
        neomaster --headless [--role ROLE] [--config FILE] [DEBUG OPTIONS]
        neomaster debug COMMAND   (the debug client; neomaster debug --help)
 
   --sim       run the panel UI in a 1024x768 X11 window; the keyboard stands in for the panel
               (see neomaster --keys) and a simulated PC2 for the real one
   --usb       with --sim: drive the real PC2 over USB instead of the simulated one
+  --panel     with --sim: read the real BeoSound 5 panel (USB 0cd4:1112) as well as the
+              keyboard, and send it clicks and backlight; on the BM5, run fullscreen on the
+              panel's own display. Needs root or a udev rule; takes the panel from usbhid
   --headless  no panel or screen: run the Masterlink loop on the real PC2 only (link rooms,
               IR, standby), e.g. on the BM5 before the panel actor exists
   --role ROLE audio-master or link-source, for this run only (default: Settings > Roles >
@@ -179,11 +183,13 @@ fn main() -> ExitCode {
     let mut config = None;
     let mut device = Pc2Device::Simulated;
     let mut mode = None;
+    let mut real_panel = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--sim" | "--headless" | "--keys" | "--help" | "-h" => mode = Some(a.as_str()),
             "--usb" => device = Pc2Device::Usb,
+            "--panel" => real_panel = true,
             "--debug" => debug_cfg.socket = Some(debug_cfg.socket.take().unwrap_or_else(debug::default_socket)),
             "--debug-tcp-inject" => debug_cfg.tcp_inject = true,
             "--debug-socket" | "--debug-tcp" | "--debug-record" => {
@@ -228,7 +234,7 @@ fn main() -> ExitCode {
         Startup { settings, persister }
     };
     let result = match mode {
-        Some("--sim") => sim::run(startup(), device, &debug_cfg),
+        Some("--sim") => sim::run(startup(), device, real_panel, &debug_cfg),
         Some("--headless") => headless(startup(), &debug_cfg),
         Some("--keys") => {
             print!("{}", sim::KEYS);

@@ -10,7 +10,7 @@ what exists and how to build it.
 |---|---|---|
 | `crates/masterlink` | Telegram codec, protocol constants, `AudioMaster` and `SourceCenter`, sans-IO | Ported from libpc2, capture replays pass |
 | `crates/pc2` | PC2 framing, fragment assembler, wake-up packets, telegram pacer, mixer, fan loop, start-up and dispatch, sans-IO | Ported from libpc2; driven over USB by the binary's PC2 actor |
-| `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; USB adapter not written yet (M4) |
+| `crates/bs5-panel` | Panel HID report decode, button edges, long press, click coalescing, backlight | Written from the 27 Nov captures; read from USB by `neomaster --sim --panel` |
 | `crates/render` | Scene types, glyph rasterising (fontdue), images (PNG), XRender backend (x11rb) | Fills, text and images (scaled, cropped, tinted, additive, rotated) |
 | `crates/ui` | Pointer zones, views, navigation, animation, layout and assets; state in, scene out | Stock layout measured from the 27 Nov screenshots: menu arc with beam, list and cover curves, now-playing, long-GO menu, volume arc, SETTINGS arc, view-switch fades, idle and blanking. Browses the Music Assistant library mirror (`ui::Library`), or a made-up one without MA. Uses the BM5's own font and textures from `$NEOMASTER_STOCK_ASSETS`, drawn look-alikes otherwise |
 | `crates/ma-client` | Music Assistant WebSocket client: auth, reconnect, typed models and events, library, queue and transport commands | Works against MA 2.10.13; the N.MUSIC actor uses it |
@@ -21,7 +21,7 @@ what exists and how to build it.
 | `crates/player` | Sendspin player: makes the BM5 a Music Assistant playback device through ALSA, reports stream start and end | Built into the binary as the BM5's MA player (N.MUSIC actor, see doc/n-music.md) |
 | `crates/settings` | The settings file (typed, versioned TOML, atomic save), the old environment variables as overrides, the Roles / source-name rules from MLConfig.dll, and the stock SETTINGS menu as data | Read at start, saved from the panel; the SETTINGS menu is drawn by `ui` |
 | `tools/bringup` | Hardware bring-up kit (M0): render benchmark (XRender / software blitter, EXA / NoAccel), panel probe, Sendspin player bench, PC2 smoke test, one-command run on the box | See `tools/bringup/README.md` |
-| `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor not written yet |
+| `crates/neomaster` | The binary: core task, PC2 actor (nusb), Masterlink role glue, simulated PC2, `--sim`, `--headless`, debug connection (`neomaster debug`) | Core loop, Masterlink loop and simulator run; panel actor (`--panel`, nusb) in the simulator |
 
 "Sans-IO" means bytes and time in, effects out: no threads, no sockets, no clocks. Every state
 machine takes `now` as a `Duration` since a fixed epoch, so tests drive time directly.
@@ -118,6 +118,12 @@ the panel sends, so the core, the panel decoder and the UI run exactly as on the
 follow BeoSound5.exe's own keyboard emulation (arrows, G, A/Z, +/-, S), plus number keys that jump
 the pointer to a zone. Holding GO opens the context menu (the simulator turns on XKB detectable
 autorepeat so a held key does not repeat as press/release pairs).
+
+On the BM5 itself, `neomaster --sim --panel` also reads the real panel (USB 0cd4:1112) and sends
+it the click and backlight reports: `panel_actor.rs` takes the panel from usbhid (root or a udev
+rule), reads its interrupt endpoint on a thread, and reopens it every 2 s when it is missing or
+unplugged. The window is 1024x768, the panel's own size, so under a bare X server with no window
+manager it fills the screen. The keyboard keeps working alongside.
 
 ## A.AUX
 

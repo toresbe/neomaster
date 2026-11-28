@@ -19,7 +19,7 @@ use x11rb::protocol::xproto::{ConnectionExt as _, KeyButMask, Keycode};
 use x11rb::protocol::Event as XEvent;
 use x11rb::rust_connection::RustConnection;
 
-use crate::core::{Core, Event, PanelOut};
+use crate::core::{Core, Event};
 use crate::link::{self, Link};
 use crate::Pc2Device;
 
@@ -37,17 +37,10 @@ neomaster --sim keys (after BeoSound5.exe's own keyboard emulation of the panel)
   Esc or Q                 quit
 ";
 
-/// The simulator has no panel to click; log it at trace level.
-struct NoPanel;
-impl PanelOut for NoPanel {
-    fn write(&mut self, report: [u8; 2]) {
-        log::trace!("panel OUT {report:02x?}");
-    }
-}
-
 pub fn run(
     startup: crate::Startup,
     device: Pc2Device,
+    real_panel: bool,
     debug_cfg: &crate::debug::Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let role = startup.role();
@@ -115,8 +108,13 @@ pub fn run(
             Some(r) => Box::new(r),
             None => Box::new(crate::core::NoAirPlay),
         };
+    let panel = if real_panel {
+        crate::panel_actor::Panel::Usb(crate::panel_actor::spawn(event_tx.clone())?)
+    } else {
+        crate::panel_actor::Panel::None
+    };
     let core =
-        startup.attach(&rt, Core::new(ui, NoPanel, aux_out, link, pc2, scene_tx), event_tx.clone()).with_radio(tuner, radio_tx);
+        startup.attach(&rt, Core::new(ui, panel, aux_out, link, pc2, scene_tx), event_tx.clone()).with_radio(tuner, radio_tx);
     let core = match music {
         Some(m) => core.with_music(m),
         None => core,
