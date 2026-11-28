@@ -98,6 +98,7 @@ Every record is an object with `t` (seconds since start-up) and `kind`, then fie
 | `inject` | `inject`: what a client injected |
 | `state` | `changed` (`{field: [old, new]}`) and the full `state`: after each change, and on request |
 | `timing` | `trigger` (`events` or `tick`), `events`, `handle_us`, `draw_us`, `redraw`: one per core loop turn |
+| `frame` | `wait_us` (scene made until the render thread took it), `draw_us` (drawing it until the X server had drawn it), `replaced` (newer scenes that replaced unseen ones), `damaged_px` (pixels redrawn); with `NEOMASTER_RENDER_PROFILE=1` also `profile`: `[label, µs]` per primitive, timed with a round trip each (slow, for finding X operations that fall back to software). `--sim` only |
 | `mark` | `text` |
 | `lagged` | `missed`: this connection fell behind and lost records |
 | `ok`, `error` | the answer to a command (`error`, `line`) |

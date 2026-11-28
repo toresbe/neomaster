@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use x11rb::connection::{Connection, RequestConnection as _};
 use x11rb::protocol::render::{
@@ -20,8 +22,9 @@ use x11rb::protocol::xproto::{
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+use crate::damage::{self, Damage};
 use crate::glyphs::{Font, GlyphKey};
-use crate::{Align, Blend, Color, ImageDraw, Primitive, Renderer, Scene};
+use crate::{Align, Blend, Color, ImageDraw, Primitive, Rect, Renderer, Scene};
 
 #[derive(Debug)]
 pub struct Error(Box<dyn std::error::Error + Send + Sync>);
@@ -61,6 +64,15 @@ pub struct XRenderer {
     next_glyph: u32,
     solids: HashMap<Color, Picture>,
     pub wm_delete_window: u32,
+    /// The scene on screen, to work out what the next one changes.
+    shown: Option<Scene>,
+    /// Set from another thread (on Expose) to make the next frame redraw everything.
+    invalid: Arc<AtomicBool>,
+    /// `NEOMASTER_RENDER_PROFILE`: time every primitive with a round trip (slow; see
+    /// [`XRenderer::profile`]).
+    profiling: bool,
+    profile: Vec<(String, u32)>,
+    damaged: u64,
 }
 
 fn xcolor(c: Color) -> render::Color {
@@ -163,7 +175,68 @@ impl XRenderer {
             next_glyph: 1,
             solids: HashMap::new(),
             wm_delete_window: delete,
+            shown: None,
+            invalid: Arc::new(AtomicBool::new(false)),
+            profiling: std::env::var_os("NEOMASTER_RENDER_PROFILE").is_some_and(|v| v == "1"),
+            profile: Vec::new(),
+            damaged: 0,
         })
+    }
+
+    /// Make the next frame redraw everything (the window was exposed). Can be called from any
+    /// thread.
+    pub fn invalidator(&self) -> Arc<AtomicBool> {
+        self.invalid.clone()
+    }
+
+    /// Wait until the X server has handled everything sent so far. The render loop calls this
+    /// after every frame, so at most one frame is ever queued in the server: without it the
+    /// renderer sends frames faster than the BM5's X server draws them, and the screen falls
+    /// seconds behind the panel.
+    pub fn sync(&self) -> Result<(), Error> {
+        self.conn.get_input_focus()?.reply()?;
+        Ok(())
+    }
+
+    /// Pixels redrawn in the last frame.
+    pub fn damaged(&self) -> u64 {
+        self.damaged
+    }
+
+    /// With `NEOMASTER_RENDER_PROFILE=1`, the last frame's time per primitive in microseconds,
+    /// measured with a round trip after each one. Shows which operations the X server does
+    /// slowly (on the BM5: the ones EXA falls back to software for).
+    pub fn profile(&self) -> Option<&[(String, u32)]> {
+        self.profiling.then_some(&self.profile[..])
+    }
+
+    fn lap(&mut self, mark: &mut Instant, what: impl FnOnce() -> String) -> Result<(), Error> {
+        if self.profiling {
+            self.sync()?;
+            let now = Instant::now();
+            self.profile.push((what(), (now - *mark).as_micros() as u32));
+            *mark = now;
+        }
+        Ok(())
+    }
+
+    /// The screen area `item` can touch.
+    fn bounds(&mut self, item: &Primitive) -> Rect {
+        match item {
+            Primitive::Fill { rect, .. } => *rect,
+            Primitive::Image(d) => d.placement().0,
+            Primitive::Text { x, y, size, align, text, .. } => {
+                let w = self.font.width(text, *size);
+                let x = match align {
+                    Align::Left => *x,
+                    Align::Center => x - w / 2,
+                    Align::Right => x - w,
+                };
+                // Generous: accents above the ascent, descenders, and side bearings.
+                let s = *size as i32;
+                Rect::new(x - s / 4, y - s * 5 / 4, (w + s / 2).max(0) as u32, (s * 7 / 4) as u32)
+            }
+        }
     }
 
     /// The connection, shared with the simulator's input thread.
@@ -257,27 +330,8 @@ impl XRenderer {
             Blend::Over => PictOp::OVER,
             Blend::Add => PictOp::ADD,
         };
-        let sx = d.src.w as f64 / d.dst.w as f64;
-        let sy = d.src.h as f64 / d.dst.h as f64;
-        // The area composited, in screen pixels, and the transform from that area's pixels to
-        // image pixels (XRender transforms map destination to source).
-        let (bx, by, bw, bh, m) = if d.angle == 0.0 {
-            let m = [sx, 0.0, d.src.x as f64, 0.0, sy, d.src.y as f64];
-            (d.dst.x, d.dst.y, d.dst.w, d.dst.h, m)
-        } else {
-            let (cx, cy) = (d.dst.x as f64 + d.dst.w as f64 / 2.0, d.dst.y as f64 + d.dst.h as f64 / 2.0);
-            let (s, c) = (d.angle as f64).sin_cos();
-            let (hw, hh) = (d.dst.w as f64 / 2.0, d.dst.h as f64 / 2.0);
-            let ex = (hw * c).abs() + (hh * s).abs();
-            let ey = (hw * s).abs() + (hh * c).abs();
-            let (bx, by) = ((cx - ex).floor(), (cy - ey).floor());
-            // area pixel (i, j) -> screen (bx + i, by + j) -> rotate by -angle about the centre
-            // -> dst-local -> image
-            let (ox, oy) = (bx - cx, by - cy);
-            let (icx, icy) = (d.src.x as f64 + d.src.w as f64 / 2.0, d.src.y as f64 + d.src.h as f64 / 2.0);
-            let m = [c * sx, s * sx, (c * ox + s * oy) * sx + icx, -s * sy, c * sy, (-s * ox + c * oy) * sy + icy];
-            (bx as i32, by as i32, (2.0 * ex).ceil() as u32 + 1, (2.0 * ey).ceil() as u32 + 1, m)
-        };
+        let (area, m) = d.placement();
+        let (bx, by, bw, bh) = (area.x, area.y, area.w, area.h);
         let fx = |v: f64| -> Fixed { (v * 65536.0).round() as Fixed };
         let t = Transform {
             matrix11: fx(m[0]),
@@ -338,9 +392,41 @@ impl Renderer for XRenderer {
     type Error = Error;
 
     fn render(&mut self, scene: &Scene) -> Result<(), Error> {
-        let full = Rectangle { x: 0, y: 0, width: self.width, height: self.height };
-        self.conn.render_fill_rectangles(PictOp::SRC, self.back_pict, xcolor(scene.background), &[full])?;
+        let screen = Rect::new(0, 0, self.width as u32, self.height as u32);
+        let shown = if self.invalid.swap(false, Ordering::Relaxed) { None } else { self.shown.take() };
+        let damage = damage::between(shown.as_ref(), scene, screen, |item| self.bounds(item));
+        self.damaged = damage.area(screen);
+        self.profile.clear();
+        let rects: Vec<Rectangle> = match &damage {
+            Damage::None => {
+                self.shown = Some(scene.clone());
+                return Ok(());
+            }
+            Damage::Full => vec![screen],
+            Damage::Rects(r) => r.clone(),
+        }
+        .iter()
+        .map(|r| Rectangle { x: r.x as i16, y: r.y as i16, width: r.w as u16, height: r.h as u16 })
+        .collect();
+        let hit = |b: Rect| {
+            rects.iter().any(|r| {
+                (b.x as i64) < r.x as i64 + r.width as i64
+                    && (r.x as i64) < b.x as i64 + b.w as i64
+                    && (b.y as i64) < r.y as i64 + r.height as i64
+                    && (r.y as i64) < b.y as i64 + b.h as i64
+            })
+        };
+        let mut mark = Instant::now();
+        // Everything below draws only inside the damage.
+        self.conn.render_set_picture_clip_rectangles(self.back_pict, 0, 0, &rects)?;
+        self.conn.render_set_picture_clip_rectangles(self.win_pict, 0, 0, &rects)?;
+        self.conn.render_fill_rectangles(PictOp::SRC, self.back_pict, xcolor(scene.background), &rects)?;
+        self.lap(&mut mark, || "background".into())?;
         for item in &scene.items {
+            let b = self.bounds(item);
+            if !hit(b) {
+                continue;
+            }
             match item {
                 Primitive::Fill { rect, color } => {
                     let r = Rectangle { x: rect.x as i16, y: rect.y as i16, width: rect.w as u16, height: rect.h as u16 };
@@ -349,22 +435,40 @@ impl Renderer for XRenderer {
                 Primitive::Text { x, y, size, color, align, text } => self.draw_text(*x, *y, *size, *color, *align, text)?,
                 Primitive::Image(d) => self.draw_image(d)?,
             }
+            self.lap(&mut mark, || describe(item))?;
         }
-        self.conn.render_composite(
-            PictOp::SRC,
-            self.back_pict,
-            x11rb::NONE,
-            self.win_pict,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            self.width,
-            self.height,
-        )?;
+        let bounds = rects.iter().fold(None::<(i16, i16, i32, i32)>, |acc, r| {
+            let (x1, y1) = (r.x as i32 + r.width as i32, r.y as i32 + r.height as i32);
+            Some(match acc {
+                None => (r.x, r.y, x1, y1),
+                Some((x0, y0, ax1, ay1)) => (x0.min(r.x), y0.min(r.y), ax1.max(x1), ay1.max(y1)),
+            })
+        });
+        let (x0, y0, x1, y1) = bounds.expect("damage is not empty");
+        let (w, h) = ((x1 - x0 as i32) as u16, (y1 - y0 as i32) as u16);
+        self.conn.render_composite(PictOp::SRC, self.back_pict, x11rb::NONE, self.win_pict, x0, y0, 0, 0, x0, y0, w, h)?;
+        self.lap(&mut mark, || "present".into())?;
+        self.shown = Some(scene.clone());
         self.conn.flush()?;
         Ok(())
+    }
+}
+
+/// A short label for a primitive, for the render profile.
+fn describe(item: &Primitive) -> String {
+    match item {
+        Primitive::Fill { rect, color } => format!("fill {}x{} a{}", rect.w, rect.h, color.a),
+        Primitive::Text { text, size, .. } => format!("text {size}px {:?}", text.chars().take(16).collect::<String>()),
+        Primitive::Image(d) => format!(
+            "image {}x{} -> {}x{}{}{}{}{}",
+            d.src.w,
+            d.src.h,
+            d.dst.w,
+            d.dst.h,
+            if d.angle != 0.0 { " rotated" } else { "" },
+            if d.blend == Blend::Add { " add" } else { "" },
+            if d.tint.is_some() { " tinted" } else { "" },
+            if d.opacity < 1.0 { " faded" } else { "" },
+        ),
     }
 }

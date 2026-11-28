@@ -5,13 +5,15 @@
 //! Threads: the X11 input thread (blocking on events), the render thread (draws the newest
 //! scene), and a small tokio runtime for the core.
 
-use std::sync::mpsc as std_mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bs5_panel::{Report, BUTTON_GO, BUTTON_LEFT, BUTTON_RIGHT, COUNTS_PER_STEP, POINTER_MAX};
 use log::{info, warn};
 use render::xrender::XRenderer;
 use render::{Renderer, Scene, SCREEN_HEIGHT, SCREEN_WIDTH};
+use serde_json::json;
 use tokio::sync::mpsc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xkb::{self, ConnectionExt as _};
@@ -62,18 +64,34 @@ pub fn run(
         warn!("No XKB: holding GO will autorepeat instead of opening the context menu");
     }
 
-    let (scene_tx, scene_rx) = std_mpsc::sync_channel::<Scene>(2);
+    let (scene_tx, scene_rx) = render::mailbox::channel::<(Instant, Scene)>();
     let (event_tx, event_rx) = mpsc::unbounded_channel::<Event>();
+    let invalidate = renderer.invalidator();
 
+    // One frame in flight: draw the newest scene, wait until the X server has drawn it, repeat.
+    // The BM5's server needs 30-50 ms for a full frame and the panel reports every 8 ms, so
+    // without the wait frames pile up in the server and the screen trails the pointer by
+    // seconds.
     let render_thread = std::thread::Builder::new().name("render".into()).spawn(move || {
-        while let Ok(mut scene) = scene_rx.recv() {
-            while let Ok(newer) = scene_rx.try_recv() {
-                scene = newer;
-            }
-            if let Err(e) = renderer.render(&scene) {
+        while let Some(((made, scene), replaced)) = scene_rx.recv() {
+            let start = Instant::now();
+            if let Err(e) = renderer.render(&scene).and_then(|()| renderer.sync()) {
                 log::error!("render: {e}");
                 return;
             }
+            let done = Instant::now();
+            crate::debug::Tap::global().emit("frame", || {
+                let mut v = json!({
+                    "wait_us": (start - made).as_micros() as u64,
+                    "draw_us": (done - start).as_micros() as u64,
+                    "replaced": replaced,
+                    "damaged_px": renderer.damaged(),
+                });
+                if let Some(p) = renderer.profile() {
+                    v["profile"] = json!(p);
+                }
+                v
+            });
         }
     })?;
 
@@ -86,7 +104,7 @@ pub fn run(
     let input_conn = conn.clone();
     let input_tx = event_tx.clone();
     std::thread::Builder::new().name("x11-input".into()).spawn(move || {
-        if let Err(e) = input_loop(&input_conn, window, wm_delete, &input_tx, panel) {
+        if let Err(e) = input_loop(&input_conn, window, wm_delete, &input_tx, panel, &invalidate) {
             log::error!("x11 input: {e}");
         }
         let _ = input_tx.send(Event::Quit);
@@ -200,6 +218,7 @@ fn input_loop(
     wm_delete: u32,
     tx: &mpsc::UnboundedSender<Event>,
     mut panel: SimPanel,
+    invalidate: &AtomicBool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let keymap = Keymap::load(conn)?;
     let zones = ui::n_music_zones();
@@ -256,7 +275,11 @@ fn input_loop(
                 5 => send(panel.report(COUNTS_PER_STEP, 0))?,
                 _ => {}
             },
-            XEvent::Expose(_) => send(Event::Redraw)?,
+            XEvent::Expose(_) => {
+                // The renderer only redraws what changed; an exposed window needs all of it.
+                invalidate.store(true, Ordering::Relaxed);
+                send(Event::Redraw)?
+            }
             XEvent::ClientMessage(m) if m.data.as_data32()[0] == wm_delete => return Ok(()),
             XEvent::Error(e) => warn!("X11 error: {e:?}"),
             _ => {}
