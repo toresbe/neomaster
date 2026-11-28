@@ -1,0 +1,106 @@
+From 2bc6e646429a0369c66fb4d28903dbb85bdb0a36 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 06/11] EXA (H2): write destination alpha; clip untransformed
+ RepeatNone pictures
+
+Broken: two separate errors in the 3D composite path, both visible as
+xformtest mismatches once composites reached the engine.
+
+- setFlags() was called with writeAlpha FALSE, so composites onto
+  a8r8g8b8 pixmaps kept the destination's old alpha.
+- xserver 21 no longer clips composites to the source drawable
+  (miClipPictureSrc only applies the client clip). An untransformed
+  source or mask without repeat is then sampled outside its bounds, and
+  the texture unit clamps or wraps instead of giving transparent.
+
+Found: xformtest mismatches on the BM5 in identity composites onto
+a8r8g8b8 destinations and around RepeatNone sources.
+
+Fix: write destination alpha when the destination format has an alpha
+channel. Treat untransformed RepeatNone pictures like transformed ones
+from 0003: clip the geometry to the picture with an identity mapping, and
+accept only operators for which a transparent source or mask leaves the
+destination unchanged (Over, OverReverse, Atop, Xor, Add). In-bounds Src
+is still a 2D blit in EXA.
+---
+ src/via_3d.c     |  4 +++-
+ src/via_exa.c    |  8 +++++++-
+ src/via_exa_h2.c | 10 +++++++++-
+ 3 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/src/via_3d.c b/src/via_3d.c
+index 7ab5a9d..5a1261f 100644
+--- a/src/via_3d.c
++++ b/src/via_3d.c
+@@ -431,6 +431,8 @@ via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
+     for (i = 0; i < v3d->numTextures; ++i) {
+         vTex = v3d->tex + i;
+         m = vTex->transform;
++        if (vTex->clipWidth)
++            clip = TRUE;
+         if (!m) {
+             ax[i] = 1; bx[i] = 0; cx[i] = srcX[i];
+             ay[i] = 0; by[i] = 1; cy[i] = srcY[i];
+@@ -471,7 +473,7 @@ via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
+         x[3] = 0; y[3] = h;
+         for (i = 0; i < v3d->numTextures && n >= 3; ++i) {
+             vTex = v3d->tex + i;
+-            if (!vTex->transform || !vTex->clipWidth)
++            if (!vTex->clipWidth)
+                 continue;
+             lo = vTex->textureFilter ? 0.5 : 0.0;
+             hiX = vTex->clipWidth - lo;
+diff --git a/src/via_exa.c b/src/via_exa.c
+index 61565b5..f7e86fe 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -473,7 +473,13 @@ viaExaPictureSupported(PicturePtr pict, Bool allowTransform)
+ Bool
+ viaExaTransformOpSupported(int op, PicturePtr pict)
+ {
+-    if (!pict || !pict->transform || pict->repeat)
++    /*
++     * xserver 21 no longer clips composites to the source drawable
++     * (miClipPictureSrc only applies the client clip), so an untransformed
++     * picture without repeat can be sampled outside its bounds just like a
++     * transformed one. Both are drawn clipped to the picture.
++     */
++    if (!pict || pict->repeat)
+         return TRUE;
+ 
+     switch (op) {
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index c710ad0..2d39462 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -505,6 +505,9 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+                                  pSrcPicture->filter == PictFilterBilinear,
+                                  pSrcPicture->repeat ? 0 : pSrc->drawable.width,
+                                  pSrcPicture->repeat ? 0 : pSrc->drawable.height);
++        else if (!pSrcPicture->repeat)
++            v3d->setTexTransform(v3d, curTex, NULL, FALSE,
++                                 pSrc->drawable.width, pSrc->drawable.height);
+         curTex++;
+     }
+ 
+@@ -529,10 +532,15 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+                                  pMaskPicture->filter == PictFilterBilinear,
+                                  pMaskPicture->repeat ? 0 : pMask->drawable.width,
+                                  pMaskPicture->repeat ? 0 : pMask->drawable.height);
++        else if (!pMaskPicture->repeat)
++            v3d->setTexTransform(v3d, curTex, NULL, FALSE,
++                                 pMask->drawable.width, pMask->drawable.height);
+         curTex++;
+     }
+ 
+-    v3d->setFlags(v3d, curTex, FALSE, TRUE, TRUE);
++    /* Write destination alpha when the destination has an alpha channel. */
++    v3d->setFlags(v3d, curTex, PICT_FORMAT_A(pDstPicture->format) != 0,
++                  TRUE, TRUE);
+     v3d->emitState(v3d, &pVia->cb, viaCheckUpload(pScrn, v3d));
+     v3d->emitClipRect(v3d, &pVia->cb, 0, 0, pDst->drawable.width,
+                       pDst->drawable.height);
+-- 
+2.53.0
+

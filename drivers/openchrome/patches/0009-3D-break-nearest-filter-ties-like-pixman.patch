@@ -1,0 +1,40 @@
+From bbd4dfedc7e522e2d388b4abe22eb794c39ec806 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 09/11] 3D: break nearest-filter ties like pixman
+
+Broken: with a transformed picture and the nearest filter, samples that
+fall exactly on a texel boundary (every sample of a 2:1 downscale) took
+the upper texel in the texture unit and the lower one in pixman
+(x - pixman_fixed_e).
+
+Found: xformtest scale2/nearest mismatches on the BM5.
+
+Fix: bias nearest-filter sample positions by -1/256 texel.
+---
+ src/via_3d.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/via_3d.c b/src/via_3d.c
+index 7347d61..e94236a 100644
+--- a/src/via_3d.c
++++ b/src/via_3d.c
+@@ -452,6 +452,15 @@ via3DEmitQuad(Via3DState * v3d, ViaCommandBuffer * cb, int dstX, int dstY,
+         by[i] = pixman_fixed_to_double(m->matrix[1][1]) / tw;
+         cy[i] = (pixman_fixed_to_double(m->matrix[1][2]) / tw +
+                  ay[i] * srcX[i] + by[i] * srcY[i]);
++        /*
++         * Nearest sampling exactly on a texel boundary (e.g. a 2:1 downscale)
++         * takes the upper texel in the texture unit but the lower one in
++         * pixman (x - pixman_fixed_e). Bias the sample position slightly.
++         */
++        if (!vTex->textureFilter) {
++            cx[i] -= 1.0 / 256;
++            cy[i] -= 1.0 / 256;
++        }
+         if (vTex->clipWidth)
+             clip = TRUE;
+     }
+-- 
+2.53.0
+

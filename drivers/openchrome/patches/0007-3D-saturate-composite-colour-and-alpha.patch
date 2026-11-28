@@ -1,0 +1,39 @@
+From f729494430196ef863336a08a47a527bd80b59a6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 07/11] 3D: saturate composite colour and alpha
+
+Broken: Render clamps every composite result to 1, but the blend unit
+setup never set the saturate bits (HC_HABLCsat / HC_HABLAsat), so Add
+wrapped around: 0xa0 + 0xff alpha gave 0x9f.
+
+Found: xformtest Add mismatches on the BM5 where the sum exceeded 0xff.
+
+Fix: set both saturate bits in blendCol0 and blendAl0.
+---
+ src/via_3d.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/via_3d.c b/src/via_3d.c
+index 5a1261f..7347d61 100644
+--- a/src/via_3d.c
++++ b/src/via_3d.c
+@@ -297,9 +297,13 @@ viaSet3DCompositeOperator(Via3DState * v3d, CARD8 op)
+         return;
+ 
+     if (vOp->supported) {
+-        v3d->blendCol0 = vOp->col0 << 4;
++        /*
++         * Saturate colour and alpha: Render clamps every result to 1, and
++         * without these bits Add wrapped around (0xa0 + 0xff gave 0x9f).
++         */
++        v3d->blendCol0 = (vOp->col0 << 4) | HC_HABLCsat_MASK;
+         v3d->blendCol1 = vOp->col1 << 2;
+-        v3d->blendAl0 = vOp->al0 << 4;
++        v3d->blendAl0 = (vOp->al0 << 4) | HC_HABLAsat_MASK;
+         v3d->blendAl1 = vOp->al1 << 2;
+     }
+ }
+-- 
+2.53.0
+

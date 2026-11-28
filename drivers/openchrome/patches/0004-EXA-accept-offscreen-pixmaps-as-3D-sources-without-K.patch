@@ -1,0 +1,101 @@
+From 697bfe708bec380d0b73dd0ce8b6eeb1ca000e75 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 04/11] EXA: accept offscreen pixmaps as 3D sources without
+ KMS; honour MigrationHeuristic
+
+Broken: under UMS (no openchrome KMS module, as on the BM5) not a single
+Render composite reached the 3D engine. viaExaIsOffscreen() only
+recognised addresses inside the KMS front buffer object, so every
+offscreen pixmap looked like system memory and EXA fell back to software.
+On top of that the driver forces MigrationHeuristic "greedy", which never
+moves pixmaps into video memory, and ignored the option in xorg.conf.
+
+Found: xformtest (X Render vs in-process pixman, 318 cases) gave
+byte-identical readbacks with ExaTransform on and off, so nothing used the
+3D engine. A debug build logging PrepareComposite_H2 showed
+srcOffscreen=0 dstOffscreen=0 for every call. A first fix compared
+devPrivate.ptr, but classic EXA sets that to NULL outside PrepareAccess
+(exa_classic.c), so it still reported 0.
+
+Fix: without KMS, ask EXA for the pixmap's offset from memoryBase
+(exaGetPixmapOffset) and treat anything below FBFreeEnd as offscreen.
+Let a MigrationHeuristic in the Device section replace the forced
+"greedy" default. The default option list holds literal strings, so it is
+dropped, not freed (freeing it aborted X).
+
+Use with Option "MigrationHeuristic" "always" in the Device section.
+---
+ src/via_driver.c | 10 ++++++++++
+ src/via_exa_h2.c | 11 +++++++++++
+ src/via_exa_h6.c | 11 +++++++++++
+ 3 files changed, 32 insertions(+)
+
+diff --git a/src/via_driver.c b/src/via_driver.c
+index cbbfb20..74f97ac 100644
+--- a/src/via_driver.c
++++ b/src/via_driver.c
+@@ -1170,6 +1170,16 @@ viaPreInit(ScrnInfoPtr pScrn, int flags)
+     /* We use a programmable clock */
+     pScrn->progClock = TRUE;
+ 
++    /*
++     * "greedy" is only a default: let a MigrationHeuristic in the Device
++     * section win, e.g. "always" to keep Render sources in video memory.
++     * The default list holds literal strings, so it is dropped, not freed.
++     */
++    if (pScrn->confScreen && pScrn->confScreen->device &&
++        xf86FindOption(pScrn->confScreen->device->options,
++                       "MigrationHeuristic")) {
++        option = NULL;
++    }
+     xf86CollectOptions(pScrn, option);
+ 
+     /* Set the bits per RGB for 8bpp mode */
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index f9fede4..c710ad0 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -403,6 +403,17 @@ viaExaIsOffscreen(PixmapPtr pPix)
+     ScrnInfoPtr pScrn = xf86ScreenToScrn(pPix->drawable.pScreen);
+     VIAPtr pVia = VIAPTR(pScrn);
+ 
++    /*
++     * Without KMS, EXA manages all of video memory from FBBase (its
++     * memoryBase), and offscreen pixmaps live beyond the front buffer.
++     * Checking only the front buffer object made every offscreen pixmap look
++     * like system memory, so all pixmap-sourced composites fell back to
++     * software. devPrivate.ptr is NULL outside PrepareAccess with classic
++     * EXA, so ask EXA for the offset (fb_ptr - memoryBase) instead.
++     */
++    if (!pVia->KMS && pVia->FBBase)
++        return exaGetPixmapOffset(pPix) < (unsigned long)pVia->FBFreeEnd;
++
+     return ((unsigned long)pPix->devPrivate.ptr -
+             (unsigned long) drm_bo_map(pScrn, pVia->drmmode.front_bo)) < pVia->drmmode.front_bo->size;
+ }
+diff --git a/src/via_exa_h6.c b/src/via_exa_h6.c
+index 2044b42..136e6e0 100644
+--- a/src/via_exa_h6.c
++++ b/src/via_exa_h6.c
+@@ -408,6 +408,17 @@ viaExaIsOffscreen(PixmapPtr pPix)
+     ScrnInfoPtr pScrn = xf86ScreenToScrn(pPix->drawable.pScreen);
+     VIAPtr pVia = VIAPTR(pScrn);
+ 
++    /*
++     * Without KMS, EXA manages all of video memory from FBBase (its
++     * memoryBase), and offscreen pixmaps live beyond the front buffer.
++     * Checking only the front buffer object made every offscreen pixmap look
++     * like system memory, so all pixmap-sourced composites fell back to
++     * software. devPrivate.ptr is NULL outside PrepareAccess with classic
++     * EXA, so ask EXA for the offset (fb_ptr - memoryBase) instead.
++     */
++    if (!pVia->KMS && pVia->FBBase)
++        return exaGetPixmapOffset(pPix) < (unsigned long)pVia->FBFreeEnd;
++
+     return ((unsigned long)pPix->devPrivate.ptr -
+             (unsigned long) drm_bo_map(pScrn, pVia->drmmode.front_bo)) < pVia->drmmode.front_bo->size;
+ }
+-- 
+2.53.0
+

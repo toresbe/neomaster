@@ -1,0 +1,108 @@
+From b9a3ae499281f143f37658ab79968668dc8e0f76 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 03:47:00 +0000
+Subject: [PATCH 05/11] EXA: don't let EXA's pixmaps overlap the driver's own
+ video memory (UMS)
+
+Broken: once 0004 sent composites to the 3D engine, identity composites
+drew in the wrong place and transformed ones produced almost nothing
+(200 512->160 composites finished in 3 ms). Under UMS the front buffer,
+the 256 kB virtual command queue, the EXA sync marker, the cursors and
+the Xv buffers are allocated from the X server's offscreen manager, which
+spans all of video memory, but EXA was told it owns everything after the
+visible screen. EXA pixmaps landed on top of those buffers; the VQ sits
+exactly at the old offScreenBase.
+
+Found: a debug build logging the VRAM layout at EXA init next to the
+PrepareComposite calls showed EXA's offscreen area starting at the VQ's
+offset.
+
+Fix: without KMS, reserve one block for EXA from the same allocator
+(largest free linear area minus 8 MB headroom for later cursor and Xv
+allocations, at least 4 MB) and hand EXA only that block. Free it in
+viaExitAccel.
+---
+ src/via_driver.h |  1 +
+ src/via_exa.c    | 40 ++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/src/via_driver.h b/src/via_driver.h
+index e7e1f7b..8dd794a 100644
+--- a/src/via_driver.h
++++ b/src/via_driver.h
+@@ -251,6 +251,7 @@ typedef struct _VIA {
+     ViaCommandBuffer    cb;
+     int                 accelMarker;
+     struct buffer_object *exa_sync_bo;
++    struct buffer_object *exa_bo;   /* UMS: video memory handed to EXA */
+     struct buffer_object *exaMem;
+     CARD32              markerOffset;
+     void               *markerBuf;
+diff --git a/src/via_exa.c b/src/via_exa.c
+index 268fc65..61565b5 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -39,6 +39,7 @@
+ #include <GL/gl.h>
+ #include <sys/mman.h>
+ 
++#include "xf86fbman.h"
+ #include "via_driver.h"
+ #include "via_regs.h"
+ #include "via_dmabuffer.h"
+@@ -943,6 +944,41 @@ viaInitExa(ScreenPtr pScreen)
+     pExa->memoryBase = pVia->FBBase;
+     pExa->memorySize = pVia->FBFreeEnd;
+     pExa->offScreenBase = pScrn->virtualY * pVia->Bpl;
++
++    /*
++     * Without KMS, the front buffer, the virtual command queue, the EXA
++     * sync marker, the cursors and the Xv buffers are all allocated from
++     * the X server's offscreen manager, which covers all of video memory.
++     * Telling EXA it owns everything after the visible screen made EXA
++     * place pixmaps on top of those buffers (the 256 kB VQ lands exactly
++     * at the old offScreenBase). Give EXA its own block from the same
++     * allocator instead, leaving headroom for later cursor and Xv
++     * allocations.
++     */
++    if (!pVia->KMS) {
++        const int headroom = 8 << 20;
++        int largest = 0;
++
++        if (xf86QueryLargestOffscreenLinear(pScreen, &largest, 32,
++                                            PRIORITY_EXTREME)) {
++            long bytes = (long) largest * (pScrn->bitsPerPixel >> 3) - headroom;
++
++            if (bytes >= (4 << 20))
++                pVia->exa_bo = drm_bo_alloc(pScrn, bytes, 32, TTM_PL_FLAG_VRAM);
++        }
++        if (!pVia->exa_bo) {
++            xf86DrvMsg(pScrn->scrnIndex, X_ERROR,
++                       "[EXA] Could not reserve video memory for EXA.\n");
++            return FALSE;
++        }
++        pExa->offScreenBase = pVia->exa_bo->offset;
++        pExa->memorySize = pVia->exa_bo->offset + pVia->exa_bo->size;
++        xf86DrvMsg(pScrn->scrnIndex, X_INFO,
++                   "[EXA] Offscreen pixmaps at 0x%08lx-0x%08lx (%lu kB).\n",
++                   (unsigned long) pExa->offScreenBase,
++                   (unsigned long) pExa->memorySize,
++                   (unsigned long) pVia->exa_bo->size >> 10);
++    }
+     pExa->pixmapOffsetAlign = 32;
+     pExa->pixmapPitchAlign = 16;
+     pExa->flags = EXA_OFFSCREEN_PIXMAPS |
+@@ -1147,6 +1183,10 @@ viaExitAccel(ScreenPtr pScreen)
+         if (pVia->exaDriverPtr) {
+             exaDriverFini(pScreen);
+         }
++        if (pVia->exa_bo) {
++            drm_bo_free(pScrn, pVia->exa_bo);
++            pVia->exa_bo = NULL;
++        }
+         free(pVia->exaDriverPtr);
+         pVia->exaDriverPtr = NULL;
+         return;
+-- 
+2.53.0
+
