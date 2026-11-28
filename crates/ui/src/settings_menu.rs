@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use bs5_panel::{Button, Input, COUNTS_PER_STEP};
+use bs5_panel::{Button, Input};
 use render::{Align, Color, Rect, Scene};
 use settings::menu::{self, Body, Facts, Item, ItemKind, SectionId};
 use settings::Settings;
@@ -180,9 +180,7 @@ impl Ui {
         match input {
             Input::VolumeWheel(_) => return None,
             Input::MenuWheel(counts) => {
-                self.menu_counts += counts;
-                let steps = self.menu_counts / COUNTS_PER_STEP;
-                self.menu_counts -= steps * COUNTS_PER_STEP;
+                let steps = self.wheel_steps(counts, now);
                 if steps != 0 && self.settings_step(id, steps) {
                     self.last_step = now;
                     fx.push(Effect::Click);
@@ -312,6 +310,7 @@ pub(crate) fn paint_icon(s: &mut Scene, opacity: f32) {
 mod tests {
     use super::*;
     use crate::fake::Library;
+    use bs5_panel::COUNTS_PER_STEP;
     use std::time::Duration;
 
     fn ms(n: u64) -> Time {
