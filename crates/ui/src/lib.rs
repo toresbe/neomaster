@@ -39,6 +39,8 @@ pub enum Effect {
     Enqueue(Vec<String>),
     /// Jump to this entry of the play queue.
     PlayQueueIndex(usize),
+    /// Transport on the now-playing view: GO, LEFT, RIGHT.
+    Transport(Transport),
     /// Absolute volume 0..=90, as the PC2 takes it.
     Volume(u8),
     SelectSource(&'static str),
@@ -55,6 +57,15 @@ pub enum Effect {
     /// A choice was made in the SETTINGS menu: these are the settings now. The core saves them
     /// and applies what changed.
     SettingsChanged(Box<settings::Settings>),
+}
+
+/// What the panel's buttons do on the now-playing view (Tore's ask after the first BM5 test:
+/// GO plays and pauses, LEFT and RIGHT step tracks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transport {
+    PlayPause,
+    Previous,
+    Next,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,6 +498,8 @@ impl Ui {
                 }
             }
             Input::Pressed(Button::Go) => self.go_long = false,
+            // a long GO on now-playing is not a play/pause
+            Input::LongPress(Button::Go) if self.on_now_playing() => self.go_long = true,
             Input::LongPress(Button::Go) => {
                 if matches!(self.current_item(), Some(Item::Track(_) | Item::Album(_) | Item::Artist(_))) {
                     self.go_long = true;
@@ -495,6 +508,11 @@ impl Ui {
                     fx.push(Effect::Click);
                 }
             }
+            Input::Released(Button::Go) if self.context.is_none() && !self.go_long && self.on_now_playing() => {
+                fx.extend(self.transport(Transport::PlayPause));
+            }
+            Input::Pressed(Button::Left) if self.on_now_playing() => fx.extend(self.transport(Transport::Previous)),
+            Input::Pressed(Button::Right) if self.on_now_playing() => fx.extend(self.transport(Transport::Next)),
             Input::Released(Button::Go) => {
                 if let Some(entry) = self.context.take() {
                     if entry == CONTEXT_DEFAULT {
@@ -617,6 +635,21 @@ impl Ui {
         }
         level.cursor = new;
         vec![Effect::Click]
+    }
+
+    /// The now-playing view is showing (pointer at either end, or the idle return).
+    fn on_now_playing(&self) -> bool {
+        self.zone().kind == ViewKind::NowPlaying
+    }
+
+    fn transport(&mut self, t: Transport) -> Vec<Effect> {
+        if t == Transport::PlayPause {
+            // shown at once; Music Assistant's report follows
+            if let Some(np) = self.now.as_mut() {
+                np.playing = !np.playing;
+            }
+        }
+        vec![Effect::Click, Effect::Transport(t)]
     }
 
     fn go(&mut self, now: Time) -> Vec<Effect> {
@@ -1159,6 +1192,24 @@ mod tests {
         ui.input(Input::MenuWheel(30), ms(1));
         ui.input(Input::Pressed(Button::Go), ms(2));
         assert_eq!(ui.input(Input::Released(Button::Go), ms(3)), vec![Effect::PlayQueueIndex(2)]);
+    }
+
+    #[test]
+    fn now_playing_go_toggles_and_left_right_step_tracks() {
+        let mut ui = ui_at(5); // NOW PLAYING
+        ui.set_now_playing(Some(NowPlaying { title: "x".into(), playing: true, ..Default::default() }));
+        ui.input(Input::Pressed(Button::Go), ms(1));
+        assert_eq!(ui.input(Input::Released(Button::Go), ms(2)), vec![Effect::Click, Effect::Transport(Transport::PlayPause)]);
+        assert!(!ui.now_playing().unwrap().playing, "shown paused at once");
+        assert_eq!(ui.input(Input::Pressed(Button::Left), ms(3)), vec![Effect::Click, Effect::Transport(Transport::Previous)]);
+        assert_eq!(ui.input(Input::Pressed(Button::Right), ms(4)), vec![Effect::Click, Effect::Transport(Transport::Next)]);
+        // a long GO on now-playing opens nothing and plays nothing
+        ui.input(Input::Pressed(Button::Go), ms(10));
+        ui.input(Input::LongPress(Button::Go), ms(900));
+        assert_eq!(ui.input(Input::Released(Button::Go), ms(1000)), vec![]);
+        // elsewhere LEFT still drills in
+        ui.input(Input::Pointer(76), ms(1100));
+        assert_eq!(ui.input(Input::Pressed(Button::Left), ms(1200)), vec![Effect::Click]);
     }
 
     #[test]

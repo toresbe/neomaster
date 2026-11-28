@@ -315,6 +315,27 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
         }
     }
 
+    /// GO, LEFT and RIGHT on the now-playing view: N.MUSIC's play/pause and track steps; on
+    /// N.RADIO, LEFT and RIGHT step presets as the Beo4's arrows do; with nothing playing, GO
+    /// starts N.MUSIC.
+    fn transport(&mut self, t: ui::Transport, now: Time) {
+        use ui::Transport::*;
+        match (self.link.playing(), t) {
+            (Some(LocalSource::NMusic), _) if self.music_enabled => self.music_send(match t {
+                PlayPause => MusicCmd::PlayPause,
+                Previous => MusicCmd::Previous,
+                Next => MusicCmd::Next,
+            }),
+            (Some(LocalSource::NRadio), Previous | Next) => {
+                let key = if t == Next { pc2::beo4::ARROW_UP } else { pc2::beo4::ARROW_DOWN };
+                let tune = self.tuner.key(key, now);
+                self.radio_tune(tune);
+            }
+            (None, PlayPause) => self.music_request(MusicCmd::Resume, now),
+            (playing, t) => info!("{t:?} on now-playing does nothing while {:?} plays", playing.map(link::display_name)),
+        }
+    }
+
     /// Something from the N.MUSIC actor. Returns whether the screen may have changed.
     fn music_event(&mut self, ev: MusicEvent, now: Time) -> bool {
         self.tap.emit("music", || json!({ "event": format!("{ev:?}") }));
@@ -767,6 +788,7 @@ impl<P: PanelOut, A: AuxOut, Q: Pc2Out> Core<P, A, Q> {
                 Effect::SettingsChanged(s) => self.settings_changed(*s),
                 Effect::Play(req) => self.music_request(MusicCmd::Play(req), now),
                 Effect::PlayQueueIndex(i) => self.music_request(MusicCmd::PlayIndex(i), now),
+                Effect::Transport(t) => self.transport(t, now),
                 // Adding to the queue does not change the source.
                 Effect::Enqueue(uris) if self.music_enabled => self.music_send(MusicCmd::Enqueue(uris)),
                 Effect::Enqueue(uris) => info!("enqueue {uris:?} (no Music Assistant configured)"),
@@ -1508,6 +1530,33 @@ mod tests {
         )
         .await;
         assert_eq!(cmds, vec![MusicCmd::Next], "the arrow works: N.MUSIC is the source now");
+    }
+
+    /// On the now-playing view GO plays and pauses and LEFT / RIGHT step tracks, through MA.
+    #[tokio::test]
+    async fn now_playing_buttons_are_transport() {
+        let button = |button, down| Event::Debug(Inject::Button { button, down });
+        let mut ev = vec![Event::Pc2Connected];
+        ev.extend(go_on_first_album());
+        ev.extend([
+            Event::Debug(Inject::Panel { menu: 0, volume: 0, pointer: Some(5) }),
+            button(Button::Go, true),
+            button(Button::Go, false),
+            button(Button::Left, true),
+            button(Button::Left, false),
+            button(Button::Right, true),
+            button(Button::Right, false),
+        ]);
+        let cmds = music_run(LinkRole::AudioMaster, ev).await;
+        assert_eq!(
+            cmds,
+            vec![
+                MusicCmd::Play(ui::PlayRequest { uri: first_album_uri(), start: None }),
+                MusicCmd::PlayPause,
+                MusicCmd::Previous,
+                MusicCmd::Next,
+            ]
+        );
     }
 
     /// N.MUSIC and N.RADIO share the BM5's Music Assistant queue. Going from N.MUSIC to N.RADIO

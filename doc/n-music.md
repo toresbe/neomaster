@@ -23,6 +23,9 @@ one actor (`crates/neomaster/src/music.rs`); the core stays sans-IO and talks to
 - **GO** replaces MA's queue with the artist, album or track and plays it; on a track inside an
   album it plays the album from that track. The now-playing view shows the guess at once and MA's
   report replaces it. **ADD TO QUEUE** (long GO) appends.
+- **On the now-playing view** GO plays and pauses, LEFT plays the previous track and RIGHT the
+  next (through MA). On N.RADIO, LEFT and RIGHT step presets like the Beo4's arrows; with nothing
+  playing, GO starts N.MUSIC. A long GO there does nothing.
 - **QUEUE** lists MA's queue from the current item on (MA keeps what has played before it); GO
   jumps there.
 - **Now playing** follows MA's queue: title, artist / album, the 512 px cover from MA's image proxy.
