@@ -5,13 +5,15 @@
 //!   0 or more and NAV_WHEEL_DOWN below, carrying the raw count (`A18Controller_OnHwMenuWheel`
 //!   0x4fbd8a). There is no fixed counts-per-step.
 //! - The view scales the counts by a gain that grows with how fast the wheel is already moving
-//!   (`AView_RotateWheel` 0x446733, `WheelGain_At` 0x42b045): 1.5 units per count up to 7200
-//!   units/s, rising linearly to 15 at 21000 units/s.
+//!   (`AView_RotateWheel` 0x446733, `WheelGain_At` 0x42b045): 1.5 degrees per count up to 7200
+//!   units/s, rising linearly to 15 at 21000 units/s. `AWheel_Rotate` turns degrees into units
+//!   of a tenth of a degree (x 10), so a count is 15 units on a slow turn.
 //! - The wheel adds the units to an accumulator that starts again when the direction changes,
 //!   and moves only by whole items, keeping the rest (`AWheel_Rotate` 0x401926). A list row is
 //!   105 units (12 rows over 126 degrees, in tenths of a degree); a cover 200 (10 over 200).
 //!
-//! So a slow turn takes 70 counts per row and 133 per cover; a fast spin down to 7 and 13.
+//! So a slow turn takes 7 counts per row and 14 per cover; a fast spin moves more than a row per
+//! count.
 
 use std::time::Duration;
 
@@ -20,12 +22,14 @@ use std::time::Duration;
 pub const ROW_UNITS: i32 = 105;
 pub const COVER_UNITS: i32 = 200;
 
+/// Degrees per count (stock floats at 0x31ac7f4 and 0x32e1364), and units per degree.
 const GAIN_SLOW: f32 = 1.5;
 const GAIN_FAST: f32 = 15.0;
+const UNITS_PER_DEGREE: f32 = 10.0;
 const SPEED_LO: f32 = 7200.0;
 const SPEED_HI: f32 = 21000.0;
 
-/// Units per count with the wheel moving at `speed` units/s.
+/// Degrees per count with the wheel moving at `speed` units/s.
 pub fn gain(speed: f32) -> f32 {
     if speed <= SPEED_LO {
         GAIN_SLOW
@@ -59,7 +63,7 @@ impl MenuWheel {
     pub fn turn(&mut self, counts: i32, now: Duration, pending_units: f32, item: i32) -> i32 {
         let speed = pending_units.abs() / travel_time(self.last.map(|t| now.saturating_sub(t)));
         self.last = Some(now);
-        let units = (counts as f32 * gain(speed)).round() as i32;
+        let units = (counts as f32 * gain(speed) * UNITS_PER_DEGREE).round() as i32;
         if units != 0 && self.units != 0 && units.signum() != self.units.signum() {
             self.units = 0;
         }
@@ -95,36 +99,36 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_turn_is_70_counts_a_row() {
+    fn a_slow_turn_is_7_counts_a_row() {
         let mut w = MenuWheel::default();
         let mut rows = 0;
-        for i in 0..70 {
-            rows += w.turn(1, ms(i * 20), 0.0, ROW_UNITS);
+        for i in 0..7 {
+            rows += w.turn(1, ms(i * 200), 0.0, ROW_UNITS);
         }
         assert_eq!(rows, 1);
         let mut w = MenuWheel::default();
-        assert_eq!(w.turn(69, ms(0), 0.0, ROW_UNITS), 0);
+        assert_eq!(w.turn(6, ms(0), 0.0, ROW_UNITS), 0);
         assert_eq!(w.turn(1, ms(500), 0.0, ROW_UNITS), 1);
-        assert_eq!(w.turn(132, ms(1000), 0.0, COVER_UNITS), 0);
+        assert_eq!(w.turn(13, ms(1000), 0.0, COVER_UNITS), 0);
         assert_eq!(w.turn(1, ms(1500), 0.0, COVER_UNITS), 1);
     }
 
     #[test]
     fn turning_back_drops_the_part_turn() {
         let mut w = MenuWheel::default();
-        assert_eq!(w.turn(60, ms(0), 0.0, ROW_UNITS), 0);
-        assert_eq!(w.turn(-10, ms(100), 0.0, ROW_UNITS), 0);
-        // 70 counts back make a row: the 60 forward did not count against them
-        assert_eq!(w.turn(-60, ms(200), 0.0, ROW_UNITS), -1);
+        assert_eq!(w.turn(6, ms(0), 0.0, ROW_UNITS), 0);
+        assert_eq!(w.turn(-1, ms(300), 0.0, ROW_UNITS), 0);
+        // 7 counts back make a row: the 6 forward did not count against them
+        assert_eq!(w.turn(-6, ms(600), 0.0, ROW_UNITS), -1);
     }
 
     #[test]
     fn a_fast_spin_accelerates() {
         let mut w = MenuWheel::default();
         // ten rows still to travel, reports 8 ms apart: 1050 units in 0.1 s = 10500 units/s
-        let n = w.turn(70, ms(0), 0.0, ROW_UNITS);
+        let n = w.turn(7, ms(0), 0.0, ROW_UNITS);
         assert_eq!(n, 1);
-        let n = w.turn(70, ms(8), 10.0 * ROW_UNITS as f32, ROW_UNITS);
+        let n = w.turn(7, ms(8), 10.0 * ROW_UNITS as f32, ROW_UNITS);
         assert!(n >= 3, "{n} rows");
     }
 }
