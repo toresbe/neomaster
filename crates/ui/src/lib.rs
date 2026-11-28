@@ -271,6 +271,9 @@ pub struct Ui {
     volume_shown_until: Time,
     /// The volume wheel's part-step (see [`volume`]).
     volume_wheel: volume::VolumeWheel,
+    /// False when the room's master owns the volume (link source): the arc then shows full, as
+    /// the stock does when it cannot know the level.
+    volume_known: bool,
     /// The arc's level when it last started moving, and when; when the arc last appeared.
     volume_level_from: f32,
     volume_level_at: Time,
@@ -322,6 +325,7 @@ impl Ui {
             volume: 34, // stock default
             volume_shown_until: Time::ZERO,
             volume_wheel: volume::VolumeWheel::default(),
+            volume_known: true,
             volume_level_from: 0.0,
             volume_level_at: Time::ZERO,
             volume_shown_since: Time::ZERO,
@@ -854,7 +858,7 @@ impl Ui {
     fn show_volume(&mut self, now: Time) {
         if self.volume_shown_until == Time::ZERO || now >= self.volume_shown_until + VOLUME_FADE {
             self.volume_shown_since = now;
-            self.volume_level_from = volume::level(self.volume, MAX_VOLUME);
+            self.volume_level_from = self.volume_level_target();
         } else {
             self.volume_level_from = self.volume_level_shown(now);
         }
@@ -864,9 +868,21 @@ impl Ui {
 
     /// The arc's level as drawn at `now`: towards the volume's in 0.1 s.
     pub(crate) fn volume_level_shown(&self, now: Time) -> f32 {
-        let to = volume::level(self.volume, MAX_VOLUME);
+        let to = self.volume_level_target();
         let t = now.saturating_sub(self.volume_level_at).as_secs_f32() / volume::LEVEL_TIME.as_secs_f32();
         self.volume_level_from + (to - self.volume_level_from) * t.min(1.0)
+    }
+
+    /// The level the arc is heading for: the volume's, or full when it is not known
+    /// (`BS5System_OnAudioVolumeChange` shows 100 % then).
+    fn volume_level_target(&self) -> f32 {
+        volume::level(if self.volume_known { self.volume } else { MAX_VOLUME }, MAX_VOLUME)
+    }
+
+    /// Whether neomaster knows the volume (audio master) or the room's master owns it (link
+    /// source); in the second case the arc shows full.
+    pub fn set_volume_known(&mut self, known: bool) {
+        self.volume_known = known;
     }
 
     pub fn volume(&self) -> u8 {
@@ -1359,6 +1375,15 @@ mod tests {
         ui.input(Input::MenuWheel(-STEP), ms(950)); // to BLUE
         let fx = ui.input(Input::Released(Button::Go), ms(1000));
         assert!(fx.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_volume_shows_full() {
+        let mut ui = ui_at(0);
+        ui.set_volume_known(false);
+        ui.set_volume(45);
+        ui.input(Input::VolumeWheel(4), ms(1));
+        assert_eq!(ui.volume_level_shown(ms(200)), volume::level(MAX_VOLUME, MAX_VOLUME));
     }
 
     #[test]

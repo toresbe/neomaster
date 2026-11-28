@@ -151,7 +151,8 @@ about a point by 19° + 144° × level to uncover it from the bottom. The level 
 6.2 % + 81.6 % × volume/90, so even full volume leaves the top of the arc dark (lit to 55°
 above level, as in the 27 Nov capture). neomaster crops the texture at the row where the
 mask's edge crosses the arc. The level moves in 0.1 s; the arc fades in over 0.1 s, stays 2 s
-and fades out over 0.4 s.
+and fades out over 0.4 s. As link source neomaster cannot know the room's volume, so the arc
+shows full (the stock shows 100 % when its audio controller has no level).
 
 ## The simulator
 
