@@ -122,7 +122,8 @@ autorepeat so a held key does not repeat as press/release pairs).
 On the BM5 itself, `neomaster --sim --panel` also reads the real panel (USB 0cd4:1112) and sends
 it the click and backlight reports: `panel_actor.rs` takes the panel from usbhid (root or a udev
 rule), reads its interrupt endpoint on a thread, and reopens it every 2 s when it is missing or
-unplugged. The window is 1024x768, the panel's own size, so under a bare X server with no window
+unplugged, putting it back in the state the core last sent (backlight, LED). Without root, install
+`tools/udev/60-neomaster-panel.rules` and add the user to plugdev. The window is 1024x768, the panel's own size, so under a bare X server with no window
 manager it fills the screen. The keyboard keeps working alongside.
 
 ## A.AUX

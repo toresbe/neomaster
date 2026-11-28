@@ -1,0 +1,4 @@
+# Let neomaster --panel open the BeoSound 5 panel (USB 0cd4:1112) without root.
+# Install: sudo cp tools/udev/60-neomaster-panel.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+# The user running neomaster must be in the plugdev group.
+SUBSYSTEM=="usb", ATTR{idVendor}=="0cd4", ATTR{idProduct}=="1112", MODE="0660", GROUP="plugdev"

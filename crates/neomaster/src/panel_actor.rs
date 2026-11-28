@@ -21,7 +21,19 @@ use crate::core::{Event, PanelOut};
 /// How long to wait before looking for a missing panel again.
 const RETRY: Duration = Duration::from_secs(2);
 
-type Shared = Arc<Mutex<Option<nusb::Interface>>>;
+/// The open panel, and the last state the core sent it (backlight, LED, IR flags; no click), so a
+/// panel that comes back is put in that state rather than the default one.
+#[derive(Default)]
+struct State {
+    iface: Option<nusb::Interface>,
+    last: Option<[u8; 2]>,
+}
+
+type Shared = Arc<Mutex<State>>;
+
+fn lock(s: &Shared) -> std::sync::MutexGuard<'_, State> {
+    s.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// The core's handle on the panel: OUT reports go to the writer thread.
 pub struct UsbPanel {
@@ -51,7 +63,7 @@ impl PanelOut for Panel {
 
 /// Start the reader and writer threads. The panel need not be there yet.
 pub fn spawn(events: mpsc::UnboundedSender<Event>) -> std::io::Result<UsbPanel> {
-    let iface: Shared = Arc::new(Mutex::new(None));
+    let iface: Shared = Arc::new(Mutex::new(State::default()));
     let (out_tx, out_rx) = std_mpsc::channel::<[u8; 2]>();
     let w = iface.clone();
     std::thread::Builder::new().name("panel-out".into()).spawn(move || writer(w, out_rx))?;
@@ -61,7 +73,12 @@ pub fn spawn(events: mpsc::UnboundedSender<Event>) -> std::io::Result<UsbPanel> 
 
 fn writer(iface: Shared, rx: std_mpsc::Receiver<[u8; 2]>) {
     while let Ok(report) = rx.recv() {
-        let Some(i) = iface.lock().ok().and_then(|g| g.clone()) else {
+        let i = {
+            let mut st = lock(&iface);
+            st.last = Some([report[0] & !0x01, report[1]]);
+            st.iface.clone()
+        };
+        let Some(i) = i else {
             debug!("panel OUT {report:02x?} dropped: no panel");
             continue;
         };
@@ -94,16 +111,23 @@ fn reader(iface: Shared, events: mpsc::UnboundedSender<Event>) {
         match open() {
             Ok((i, ep)) => {
                 missing_logged = false;
-                // Backlight on: a panel left blanked (by the stock software, or by us before a
-                // replug) shows nothing. The core's own state catches up on its next effect.
-                for r in bs5_panel::Output::new().wake() {
-                    if let Err(e) = set_report(&i, r) {
-                        warn!("panel wake {r:02x?}: {e}");
+                // Put the panel in the state the core last sent it; if it has sent nothing yet,
+                // backlight on, since a panel left blanked by the stock software shows nothing.
+                {
+                    let mut st = lock(&iface);
+                    let reports = match st.last {
+                        Some(r) => vec![r],
+                        None => bs5_panel::Output::new().wake().to_vec(),
+                    };
+                    for r in reports {
+                        if let Err(e) = set_report(&i, r) {
+                            warn!("panel state {r:02x?}: {e}");
+                        }
                     }
+                    st.iface = Some(i);
                 }
-                *iface.lock().unwrap_or_else(|p| p.into_inner()) = Some(i);
                 let gone = read(ep, &events);
-                *iface.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                lock(&iface).iface = None;
                 if !gone {
                     return; // the core has stopped
                 }
