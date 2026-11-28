@@ -22,11 +22,12 @@
 //! | `NEOMASTER_SENDSPIN_URL` | MA's Sendspin endpoint (default `ws://<MA host>:8927/sendspin`) |
 //! | `NEOMASTER_PLAYER_ID`, `NEOMASTER_PLAYER_NAME` | the built-in player's id and name in MA |
 //! | `NEOMASTER_PLAYER_DEVICE` | its ALSA device (`--sim`: `null`, silent, unless set) |
+//! | `NEOMASTER_PLAYER_BUFFER_FRAMES` | its ALSA period in frames (default 2048; `0`: the device's default) |
 //! | `NEOMASTER_DATA_DIR` | where the library mirror, covers and atlas live |
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use library::{Atlas, Kind, PixelFormat, Store};
 use log::{debug, info, warn};
@@ -109,6 +110,8 @@ pub struct SendspinConfig {
     pub client_id: String,
     pub name: String,
     pub device: Option<String>,
+    /// ALSA period in frames; `None`: the device's default.
+    pub buffer_frames: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -188,6 +191,14 @@ impl MusicConfig {
                     client_id: get("NEOMASTER_PLAYER_ID").unwrap_or(id),
                     name: get("NEOMASTER_PLAYER_NAME").unwrap_or(name),
                     device: get("NEOMASTER_PLAYER_DEVICE").or(sim.then(|| "null".to_string())),
+                    buffer_frames: match get("NEOMASTER_PLAYER_BUFFER_FRAMES") {
+                        None => Some(player::DEFAULT_BUFFER_FRAMES),
+                        Some(v) => match v.trim().parse::<u32>() {
+                            Ok(0) => None,
+                            Ok(n) => Some(n),
+                            Err(_) => return Err(format!("NEOMASTER_PLAYER_BUFFER_FRAMES={v:?}: expected a number of frames")),
+                        },
+                    },
                 })
             }
             Some("none") | Some("external") | Some("squeezelite") => {
@@ -317,6 +328,85 @@ pub fn load_library(cfg: &library::sync::SyncConfig) -> library::Result<ui::Libr
     Ok(lib)
 }
 
+/// NEXT and PREVIOUS, done by jumping to a queue index ourselves.
+///
+/// MA's own `player_queues/next` and `previous` wait a fixed second before they act (to
+/// gather repeated presses), and that second was most of the time from RIGHT to the next
+/// track. So the actor asks for `play_index` instead: a lone press goes at once; presses
+/// that follow within [`SKIP_BURST`] add up and go [`SKIP_SETTLE`] after the last one, so a
+/// run of presses starts one stream, not one per press (each Spotify stream costs MA a
+/// player restart).
+#[derive(Debug, Default)]
+struct Skipper {
+    /// Where the presses so far lead, until MA's queue gets there.
+    target: Option<i64>,
+    /// When the gathered target is due to be sent.
+    due: Option<Instant>,
+    last_press: Option<Instant>,
+}
+
+/// What to do about a press.
+#[derive(Debug, PartialEq, Eq)]
+enum Skip {
+    /// Send `play_index` now.
+    Now(i64),
+    /// Gathered; wait for [`Skipper::due`].
+    Later,
+    /// Past either end of the queue: let MA's own `next`/`previous` decide (repeat, end).
+    Ma,
+}
+
+/// Presses this close together are one run of presses.
+const SKIP_BURST: Duration = Duration::from_millis(1000);
+/// A run of presses is sent this long after its last press.
+const SKIP_SETTLE: Duration = Duration::from_millis(300);
+/// A target MA never confirmed is forgotten after this.
+const SKIP_FORGET: Duration = Duration::from_secs(3);
+
+impl Skipper {
+    /// A NEXT (`+1`) or PREVIOUS (`-1`) press, with MA's current index and queue length.
+    fn press(&mut self, step: i64, current: i64, len: i64, now: Instant) -> Skip {
+        let burst = self.last_press.is_some_and(|t| now.saturating_duration_since(t) < SKIP_BURST);
+        let stale = self.last_press.is_some_and(|t| now.saturating_duration_since(t) >= SKIP_FORGET);
+        if stale && self.due.is_none() {
+            self.target = None;
+        }
+        self.last_press = Some(now);
+        let target = self.target.unwrap_or(current) + step;
+        if target < 0 || target >= len {
+            self.target = None;
+            self.due = None;
+            return Skip::Ma;
+        }
+        self.target = Some(target);
+        if burst {
+            self.due = Some(now + SKIP_SETTLE);
+            Skip::Later
+        } else {
+            self.due = None;
+            Skip::Now(target)
+        }
+    }
+
+    /// The gathered target, once due.
+    fn take_due(&mut self, now: Instant) -> Option<i64> {
+        if self.due.is_some_and(|d| d <= now) {
+            self.due = None;
+            self.target
+        } else {
+            None
+        }
+    }
+
+    /// MA's queue moved to `current`.
+    fn queue_at(&mut self, current: i64, now: Instant) {
+        let old = self.last_press.is_none_or(|t| now.saturating_duration_since(t) >= SKIP_FORGET);
+        if self.due.is_none() && (self.target == Some(current) || old) {
+            self.target = None;
+        }
+    }
+}
+
 /// A now-playing cover: its proxy id and the image.
 type CachedArt = (String, Arc<render::Image>);
 
@@ -333,6 +423,9 @@ struct Actor {
     /// Where the current item is in MA's queue. MA keeps what has played before it; the QUEUE
     /// view, as the stock one, lists from the current item on.
     queue_offset: usize,
+    /// How many items MA's queue holds.
+    queue_len: i64,
+    skipper: Skipper,
     /// The cover fetched for now-playing (proxy id), so it is fetched once.
     art_for: Option<String>,
     /// ... and the image, once there: the next track of an album has the same cover.
@@ -372,6 +465,8 @@ impl Actor {
     fn queue_updated(&mut self, q: &ma_client::PlayerQueue) -> bool {
         let offset = q.current_index.unwrap_or(0).max(0) as usize;
         let moved = std::mem::replace(&mut self.queue_offset, offset) != offset;
+        self.queue_len = q.items;
+        self.skipper.queue_at(offset as i64, Instant::now());
         self.now_playing(q);
         moved
     }
@@ -491,6 +586,23 @@ impl Actor {
             warn!("N.MUSIC: Music Assistant or the BM5's player is not there; {cmd:?} dropped");
             return;
         };
+        if let MusicCmd::Next | MusicCmd::Previous = cmd {
+            let step = if cmd == MusicCmd::Next { 1 } else { -1 };
+            match self.skipper.press(step, self.queue_offset as i64, self.queue_len, Instant::now()) {
+                Skip::Now(i) => self.jump(&q, i),
+                Skip::Later => debug!("N.MUSIC: {cmd:?} gathered, to index {:?}", self.skipper.target),
+                Skip::Ma => {
+                    let c = self.client.clone();
+                    tokio::spawn(async move {
+                        let r = if step > 0 { c.next(&q).await } else { c.previous(&q).await };
+                        if let Err(e) = r {
+                            warn!("N.MUSIC: {cmd:?} on {q}: {e}");
+                        }
+                    });
+                }
+            }
+            return;
+        }
         let c = &self.client;
         let r = match &cmd {
             MusicCmd::Play(PlayRequest { uri, start: Some(start) }) => c.play_media_from(&q, uri, start).await,
@@ -503,13 +615,33 @@ impl Actor {
             MusicCmd::PlayIndex(i) => c.play_index(&q, (self.queue_offset + *i) as i64).await,
             MusicCmd::Resume => c.play(&q).await,
             MusicCmd::Pause => c.pause(&q).await,
-            MusicCmd::Next => c.next(&q).await,
             MusicCmd::PlayPause => c.play_pause(&q).await,
-            MusicCmd::Previous => c.previous(&q).await,
+            MusicCmd::Next | MusicCmd::Previous => unreachable!("handled above"),
         };
         match r {
             Ok(()) => debug!("N.MUSIC: {cmd:?} on {q}"),
             Err(e) => warn!("N.MUSIC: {cmd:?} on {q}: {e}"),
+        }
+    }
+}
+
+impl Actor {
+    /// Play queue index `i`, without holding up the actor while MA starts the stream.
+    fn jump(&self, queue: &str, i: i64) {
+        debug!("N.MUSIC: skipping to queue index {i}");
+        let (c, q) = (self.client.clone(), queue.to_owned());
+        tokio::spawn(async move {
+            if let Err(e) = c.play_index(&q, i).await {
+                warn!("N.MUSIC: play index {i} on {q}: {e}");
+            }
+        });
+    }
+
+    /// Send a gathered run of NEXT/PREVIOUS presses, if due.
+    fn skip_due(&mut self) {
+        let Some(i) = self.skipper.take_due(Instant::now()) else { return };
+        if let Some(q) = self.queue.clone() {
+            self.jump(&q, i);
         }
     }
 }
@@ -557,6 +689,8 @@ pub async fn run(
         queue: None,
         queue_watch,
         queue_offset: 0,
+        queue_len: 0,
+        skipper: Skipper::default(),
         art_for: None,
         art: Default::default(),
         covers,
@@ -576,6 +710,7 @@ pub async fn run(
         Some(s) => {
             let mut pc = player::PlayerConfig::new(&s.url, &s.client_id, &s.name);
             pc.device = s.device.clone();
+            pc.buffer_frames = s.buffer_frames;
             info!(
                 "N.MUSIC: built-in Sendspin player {:?} ({}) on {}, output {}",
                 s.name,
@@ -602,7 +737,15 @@ pub async fn run(
                 None => std::future::pending().await,
             }
         };
+        let skip_due = actor.skipper.due;
+        let skip = async {
+            match skip_due {
+                Some(t) => tokio::time::sleep_until(t.into()).await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
+            _ = skip => actor.skip_due(),
             c = cmds.recv() => {
                 let Some(c) = c else { return };
                 actor.command(c, &mut queue_rx).await;
@@ -689,6 +832,54 @@ pub fn spawn(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_lone_press_skips_at_once() {
+        let t = Instant::now();
+        let mut s = Skipper::default();
+        assert_eq!(s.press(1, 4, 10, t), Skip::Now(5));
+        s.queue_at(5, t + Duration::from_millis(400));
+        assert_eq!(s.target, None, "MA got there");
+        // a second lone press, well after: from where MA is
+        assert_eq!(s.press(-1, 5, 10, t + Duration::from_secs(5)), Skip::Now(4));
+    }
+
+    #[test]
+    fn a_run_of_presses_adds_up_and_goes_once() {
+        let t = Instant::now();
+        let ms = |n| t + Duration::from_millis(n);
+        let mut s = Skipper::default();
+        assert_eq!(s.press(1, 0, 10, t), Skip::Now(1));
+        // MA hasn't moved yet: the next presses count from the target, not from 0
+        assert_eq!(s.press(1, 0, 10, ms(200)), Skip::Later);
+        assert_eq!(s.press(1, 0, 10, ms(400)), Skip::Later);
+        assert_eq!(s.take_due(ms(600)), None, "not settled yet");
+        // MA reaching the first target meanwhile doesn't drop the run
+        s.queue_at(1, ms(650));
+        assert_eq!(s.take_due(ms(700)), Some(3));
+        assert_eq!(s.take_due(ms(800)), None, "sent once");
+        s.queue_at(3, ms(900));
+        assert_eq!(s.target, None);
+    }
+
+    #[test]
+    fn past_the_ends_ma_decides() {
+        let t = Instant::now();
+        let mut s = Skipper::default();
+        assert_eq!(s.press(1, 9, 10, t), Skip::Ma, "last item: MA's repeat or end");
+        assert_eq!(s.press(-1, 0, 10, t + Duration::from_secs(5)), Skip::Ma);
+        assert_eq!(s.press(1, 0, 0, t + Duration::from_secs(10)), Skip::Ma, "queue length unknown");
+    }
+
+    #[test]
+    fn an_unconfirmed_target_is_forgotten() {
+        let t = Instant::now();
+        let mut s = Skipper::default();
+        assert_eq!(s.press(1, 2, 10, t), Skip::Now(3));
+        // MA never moved (the jump failed); a later press counts from where MA is
+        assert_eq!(s.press(1, 2, 10, t + SKIP_FORGET), Skip::Now(3));
+    }
+
     use super::*;
 
     fn vars(v: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
