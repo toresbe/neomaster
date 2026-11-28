@@ -69,7 +69,7 @@ player has no settings yet, only environment variables:
 | `NEOMASTER_PLAYER` | `sendspin` (default): the built-in player; `none`: an external player such as Squeezelite (the fallback), named by `player_id` |
 | `NEOMASTER_SENDSPIN_URL` | MA's Sendspin endpoint (default `ws://<MA host>:8927/sendspin`) |
 | `NEOMASTER_PLAYER_ID`, `NEOMASTER_PLAYER_NAME` | the built-in player's id and name in MA (default `neomaster-<hostname>`, "BeoMaster 5"; with `--sim`, `neomaster-sim-<hostname>`, so a desktop never takes over the BM5's player) |
-| `NEOMASTER_PLAYER_DEVICE` | its ALSA device. With `--sim` the default is `null` (silent); set it to `default` to hear it |
+| `NEOMASTER_PLAYER_DEVICE` | its ALSA device. With `--sim` the default is `null` (silent); set it to `default` to hear it. On the BM5, `default` is card 0, the A.AUX USB adapter: use `plughw:CARD=VT82xx,DEV=0`, the analog out to the PC2 (also for `NEOMASTER_AUX_PLAYBACK`) |
 | `NEOMASTER_DATA_DIR` | the mirror, covers and atlas (default `/var/lib/neomaster` as root, else `~/.local/share/neomaster`) |
 
 MA wraps the Sendspin client in a "universal" player (`up…`) a few seconds after it first
