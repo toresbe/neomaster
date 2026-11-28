@@ -1,0 +1,235 @@
+From 411e0e6cd3b73c1666027a3fc45057a62968a11c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 05:20:00 +0000
+Subject: [PATCH 12/13] EXA: draw solid-fill pictures as a constant colour
+
+Broken: Render solid-fill pictures (RenderCreateSolidFill, no drawable)
+were rejected by CheckComposite as source or mask, so every composite
+using one went to software: text (CompositeGlyphs with a solid source),
+a tinted texture drawn through a solid colour, an image faded by a solid
+mask, and translucent fills. Under MigrationHeuristic "always" each
+fallback also copied the destination between video and system memory,
+which on the BM5 cost more than the 3D engine saved.
+
+Found: VIA_TRACE logging of CheckComposite rejections while neomaster
+drew a frame: "srcpict" sources and masks were the only rejections, and
+each was followed by a back-buffer download and re-upload.
+
+Fix: viaExaPictureSupported() and viaExaTransformOpSupported() accept a
+solid-fill picture (gradients stay in software). PrepareComposite feeds a
+solid source as the constant colour and a solid mask as the constant
+alpha, through the same paths the driver already used for one-pixel
+repeating pixmaps. A solid source through a solid mask becomes one
+colour (the source scaled by the mask's alpha).
+
+Tested with test/solidtest.c against pixman on 24- and 32-bit
+destinations: 56 of 56 cases within 3 levels (14 inside bilinear
+transformed masks, edges excluded); xformtest and droptest unchanged.
+---
+ src/via_driver.h |  6 +++++
+ src/via_exa.c    | 16 ++++++++++--
+ src/via_exa_h2.c | 66 ++++++++++++++++++++++++++++++++++++------------
+ 3 files changed, 70 insertions(+), 18 deletions(-)
+
+diff --git a/src/via_driver.h b/src/via_driver.h
+index 8dd794a..2166c6a 100644
+--- a/src/via_driver.h
++++ b/src/via_driver.h
+@@ -269,6 +269,11 @@ typedef struct _VIA {
+     Bool                componentAlpha;
+     void               *srcP;
+     CARD32              srcFormat;
++    /* Solid-fill pictures (no drawable), drawn as a constant colour. */
++    Bool                srcSolid;
++    CARD32              srcSolidCol;
++    Bool                maskSolid;
++    CARD32              maskSolidCol;
+     unsigned            scratchOffset;
+     int                 exaScratchSize;
+     char *              scratchAddr;
+@@ -411,6 +416,7 @@ Bool viaCheckUpload(ScrnInfoPtr pScrn, Via3DState * v3d);
+ void viaPixelARGB8888(unsigned format, void *pixelP, CARD32 * argb8888);
+ Bool viaExpandablePixel(int format);
+ Bool viaExaPictureSupported(PicturePtr pict, Bool allowTransform);
++Bool viaExaIsSolidFill(PicturePtr pict);
+ ViaTextureModes viaExaTextureMode(PicturePtr pict);
+ Bool viaExaTransformOpSupported(int op, PicturePtr pict);
+ void viaAccelFillPixmap(ScrnInfoPtr, unsigned long, unsigned long,
+diff --git a/src/via_exa.c b/src/via_exa.c
+index 9f0045b..98de213 100644
+--- a/src/via_exa.c
++++ b/src/via_exa.c
+@@ -449,6 +449,18 @@ viaIsPOT(int v)
+  *   largest texture), when the drawable is a pixmap. The caller then has
+  *   to set the transform on the texture unit with setTexTransform.
+  */
++/*
++ * A solid-fill source picture (RenderCreateSolidFill): no drawable, one
++ * colour everywhere. The 3D engine draws it as a constant colour, like a
++ * one-pixel repeating pixmap. Gradients are left to software.
++ */
++Bool
++viaExaIsSolidFill(PicturePtr pict)
++{
++    return pict && !pict->pDrawable && pict->pSourcePict &&
++           pict->pSourcePict->type == SourcePictTypeSolidFill;
++}
++
+ Bool
+ viaExaPictureSupported(PicturePtr pict, Bool allowTransform)
+ {
+@@ -460,7 +472,7 @@ viaExaPictureSupported(PicturePtr pict, Bool allowTransform)
+ 
+     d = pict->pDrawable;
+     if (!d)
+-        return FALSE;
++        return viaExaIsSolidFill(pict);
+ 
+     solid = pict->repeat && d->width == 1 && d->height == 1;
+ 
+@@ -525,7 +537,7 @@ viaExaTransformOpSupported(int op, PicturePtr pict)
+      * picture without repeat can be sampled outside its bounds just like a
+      * transformed one. Both are drawn clipped to the picture.
+      */
+-    if (!pict || pict->repeat)
++    if (!pict || pict->repeat || viaExaIsSolidFill(pict))
+         return TRUE;
+ 
+     switch (op) {
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index 2d39462..c1056a7 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -315,11 +315,8 @@ viaExaCheckComposite_H2(int op, PicturePtr pSrcPicture,
+         return FALSE;
+     }
+ 
+-    if (!pSrcPicture->pDrawable)
+-        return FALSE;
+-
+     /* Reject small composites early. They are done much faster in software. */
+-    if (!pSrcPicture->repeat &&
++    if (pSrcPicture->pDrawable && !pSrcPicture->repeat &&
+         pSrcPicture->pDrawable->width *
+         pSrcPicture->pDrawable->height < VIA_MIN_COMPOSITE)
+         return FALSE;
+@@ -434,7 +431,7 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+ 
+     /* Workaround: EXA crash with new libcairo2 on a VIA VX800 (#298) */
+     /* TODO Add real source only pictures */
+-    if (!pSrc) {
++    if (!pSrc && !viaExaIsSolidFill(pSrcPicture)) {
+ 	    ErrorF("pSrc is NULL\n");
+ 	    return FALSE;
+ 	}
+@@ -444,8 +441,33 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+     v3d->setCompositeOperator(v3d, op);
+     v3d->setDrawing(v3d, 0x0c, 0xFFFFFFFF, 0x000000FF, 0xFF);
+ 
+-    viaOrder(pSrc->drawable.width, &width);
+-    viaOrder(pSrc->drawable.height, &height);
++    pVia->srcSolid = viaExaIsSolidFill(pSrcPicture);
++    pVia->srcSolidCol = pVia->srcSolid ?
++                        pSrcPicture->pSourcePict->solidFill.color : 0;
++    pVia->maskSolid = viaExaIsSolidFill(pMaskPicture);
++    pVia->maskSolidCol = pVia->maskSolid ?
++                         pMaskPicture->pSourcePict->solidFill.color : 0;
++
++    /*
++     * A solid source through a solid mask is one colour: the source scaled
++     * by the mask's alpha (Render's IN).
++     */
++    if (pVia->srcSolid && pVia->maskSolid) {
++        CARD32 c = pVia->srcSolidCol, a = pVia->maskSolidCol >> 24, r = 0;
++        int i;
++
++        for (i = 0; i < 32; i += 8)
++            r |= ((((c >> i) & 0xff) * a + 127) / 255) << i;
++        pVia->srcSolidCol = r;
++        pVia->maskSolid = FALSE;
++        pMaskPicture = NULL;
++        pMask = NULL;
++    }
++
++    if (pSrc) {
++        viaOrder(pSrc->drawable.width, &width);
++        viaOrder(pSrc->drawable.height, &height);
++    }
+ 
+     /*
+      * For one-pixel repeat mask pictures we avoid using multitexturing by
+@@ -456,7 +478,11 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+ 
+     srcMode = via_src;
+     pVia->maskP = NULL;
+-    if (pMaskPicture &&
++    if (pVia->maskSolid) {
++        pVia->componentAlpha = pMaskPicture->componentAlpha;
++        srcMode = ((pMaskPicture->componentAlpha)
++                   ? via_src_onepix_comp_mask : via_src_onepix_mask);
++    } else if (pMaskPicture &&
+         (pMaskPicture->pDrawable->height == 1) &&
+         (pMaskPicture->pDrawable->width == 1) &&
+         pMaskPicture->repeat && viaExpandablePixel(pMaskPicture->format)) {
+@@ -473,7 +499,9 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+      */
+ 
+     pVia->srcP = NULL;
+-    if (pSrcPicture && pSrcPicture->repeat
++    if (pVia->srcSolid && (pVia->maskP || pVia->maskSolid))
++        return FALSE;
++    if (pSrcPicture && pSrcPicture->pDrawable && pSrcPicture->repeat
+         && (pSrcPicture->pDrawable->height == 1)
+         && (pSrcPicture->pDrawable->width == 1)
+         && viaExpandablePixel(pSrcPicture->format)) {
+@@ -488,7 +516,7 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+         return FALSE;
+     }
+ 
+-    if (!pVia->srcP) {
++    if (!pVia->srcP && !pVia->srcSolid) {
+         offset = exaGetPixmapOffset(pSrc);
+         isAGP = viaIsAGP(pVia, pSrc, &offset);
+         if (!isAGP && !viaExaIsOffscreen(pSrc))
+@@ -511,7 +539,7 @@ viaExaPrepareComposite_H2(int op, PicturePtr pSrcPicture,
+         curTex++;
+     }
+ 
+-    if (pMaskPicture && !pVia->maskP) {
++    if (pMaskPicture && !pVia->maskP && !pVia->maskSolid) {
+         offset = exaGetPixmapOffset(pMask);
+         isAGP = viaIsAGP(pVia, pMask, &offset);
+         if (!isAGP && !viaExaIsOffscreen(pMask))
+@@ -557,18 +585,24 @@ viaExaComposite_H2(PixmapPtr pDst, int srcX, int srcY, int maskX, int maskY,
+     Via3DState *v3d = &pVia->v3d;
+     CARD32 col;
+ 
+-    if (pVia->maskP) {
+-        viaPixelARGB8888(pVia->maskFormat, pVia->maskP, &col);
++    if (pVia->maskP || pVia->maskSolid) {
++        if (pVia->maskSolid)
++            col = pVia->maskSolidCol;
++        else
++            viaPixelARGB8888(pVia->maskFormat, pVia->maskP, &col);
+         v3d->setTexBlendCol(v3d, 0, pVia->componentAlpha, col);
+     }
+-    if (pVia->srcP) {
+-        viaPixelARGB8888(pVia->srcFormat, pVia->srcP, &col);
++    if (pVia->srcP || pVia->srcSolid) {
++        if (pVia->srcSolid)
++            col = pVia->srcSolidCol;
++        else
++            viaPixelARGB8888(pVia->srcFormat, pVia->srcP, &col);
+         v3d->setDrawing(v3d, 0x0c, 0xFFFFFFFF, col & 0x00FFFFFF, col >> 24);
+         srcX = maskX;
+         srcY = maskY;
+     }
+ 
+-    if (pVia->maskP || pVia->srcP)
++    if (pVia->maskP || pVia->srcP || pVia->maskSolid || pVia->srcSolid)
+         v3d->emitState(v3d, &pVia->cb, viaCheckUpload(pScrn, v3d));
+ 
+     v3d->emitQuad(v3d, &pVia->cb, dstX, dstY, srcX, srcY, maskX, maskY,
+-- 
+2.53.0
+
