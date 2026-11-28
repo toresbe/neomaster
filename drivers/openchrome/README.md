@@ -23,6 +23,8 @@ With the full series, Render composites run on the 3D engine. Background and the
 | `0009` | Breaks nearest-filter ties like pixman (2:1 downscales picked the other texel) | Always on |
 | `0010` | Waits for the command queue to drain before each 3D segment in PCI mode. Without it, about 49 of 50 back-to-back composites were lost | Always on |
 | `0011` | Sends transformed repeating pictures with the bilinear filter to software (the texture unit doesn't wrap bilinear samples) | Always on |
+| `0012` | Draws Render solid-fill pictures (no drawable) as a constant colour, as source or mask, instead of falling back: text with a solid colour, tinted textures, images faded by a solid mask, translucent fills | Always on |
+| `0013` | Picks the 2D engine mode for solid fills by bits per pixel, not depth. Depth 24 (the screen and window-format pixmaps) matched no mode, so every fill on them was done in software | Always on |
 
 **Without 0002,** a transformed source over 400 pixels is drawn as an
 unscaled crop of the image. Patches 0001 and 0002 make neomaster render
@@ -37,7 +39,7 @@ were used along the way and are not included.
 ## Status
 
 The full series runs on the BM5 (2026-11-28, as Debian package
-`1:0.6.0-5+nm8`) with `MigrationHeuristic "always"` and `ExaTransform "true"`.
+`1:0.6.0-5+nm9`; 0001-0011 were `+nm8`) with `MigrationHeuristic "always"` and `ExaTransform "true"`.
 X runs in UMS with EXA. The log shows
 `[EXA] Offscreen pixmaps at 0x00641000-0x03800000 (50940 kB)` and
 `EXA transformed and bilinear composites enabled`. Neomaster's Render use
@@ -81,6 +83,51 @@ The offline harness (`test/run_harness.sh`) was written for 0003 and hasn't
 been re-run on the full series. 0007 changes the blend setup words, so its
 "untransformed: identical" check should be expected to report a difference
 now; xformtest on hardware is the reference.
+
+### Solid colours and fills (0012, 0013)
+
+With 0001-0011 and `"always"`, a neomaster frame still mixed engines.
+Logging every `CheckComposite` rejection, `PrepareSolid` failure and EXA
+transfer (a debug build, not included) showed three kinds of fallback:
+solid-fill sources and masks (text, the tinted beam, faded images),
+glyph runs drawn through a temporary A8 picture that the 3D engine can't
+render to, and every solid fill on a depth-24 pixmap (the
+`viaAccelSetMode` depth/bpp mix-up). Each fallback made EXA copy the back
+buffer out of video memory and back. During a 4 s pointer sweep that
+was about 1,400 downloads and 2,800 uploads of parts of the 1024x768 buffer,
+and about half of Xorg's time went to `memcpy`.
+
+0012 and 0013 fix the driver side. Neomaster sends glyphs without a mask
+format, so each glyph composites straight onto the back buffer
+(`crates/render/src/xrender.rs`). With all three, the same sweep logs no
+fallbacks and no transfers of the back buffer, only first-use glyph
+uploads.
+
+`test/solidtest.c` compares solid-fill composites and `FillRectangles` with
+pixman on 24- and 32-bit destinations (56 cases: Over and Add with no mask,
+an a8 mask, a rotated bilinear ARGB mask and a solid mask; images through a
+solid mask; OutReverse; fills with Src, Over and Add). On the BM5 all 56 are
+within 3 levels, the 3D blend's double rounding. Inside transformed bilinear
+masks the limit is 14, as in xformtest, and their 2-pixel edge band is
+skipped. xformtest still has the same 88 precision-level cases and droptest
+is exact.
+
+| Composite, 256x256, on the 3D engine | ms |
+| --- | --- |
+| Solid colour through a rotated bilinear ARGB mask, Add (the beam) | 0.13 |
+| Solid colour through an a8 mask, Over (a glyph run) | 0.57 |
+| Translucent solid colour, Over (a highlight bar) | 0.23 |
+
+Neomaster's pointer sweep (neomaster#34's one-frame-in-flight renderer, one
+panel report every 8 ms), input to screen:
+
+| Driver and heuristic | Frames drawn | Median | p90 |
+| --- | --- | --- | --- |
+| nm8, `"always"` | 37 fps | 31 ms | 49 ms |
+| nm8, `"greedy"` (all software) | 50 fps | 26 ms | 33 ms |
+| nm9 (0012, 0013), `"always"` | every report (120/s) | 3.9 ms | 5.7 ms |
+
+Xorg's CPU use during the sweep fell from about 70% to about 30%.
 
 ## Enabling on the BM5
 

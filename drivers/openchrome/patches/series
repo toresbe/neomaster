@@ -9,3 +9,5 @@
 0009-3D-break-nearest-filter-ties-like-pixman.patch
 0010-EXA-pace-the-3D-command-stream-in-PCI-mode.patch
 0011-EXA-no-bilinear-filtering-of-transformed-repeating-p.patch
+0012-EXA-draw-solid-fill-pictures-as-a-constant-colour.patch
+0013-EXA-choose-the-2D-engine-mode-for-solid-fills-by-bit.patch

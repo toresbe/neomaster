@@ -1,0 +1,53 @@
+From de60f8cd1d1d82b1ac9efe5a91e6358f0c0087f6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 05:30:00 +0000
+Subject: [PATCH 13/13] EXA: choose the 2D engine mode for solid fills by bits
+ per pixel
+
+Broken: viaExaPrepareSolid_H2/_H6 passed the pixmap's depth to
+viaAccelSetMode(), which only knows bits per pixel (8, 16, 32). Depth 24,
+the screen and every window-format pixmap, matched nothing, so every
+solid fill on them was done in software. Under MigrationHeuristic
+"always" each such fill also copied the destination out of video memory
+and back, so a full-screen background fill cost tens of milliseconds and
+the next composite waited for the upload.
+
+Found: VIA_TRACE logging of PrepareSolid failures and EXA transfers while
+neomaster drew: two failed PrepareSolid calls at the start of every frame,
+each followed by a download of the back buffer.
+
+Fix: pass bitsPerPixel, as PrepareCopy already does.
+---
+ src/via_exa_h2.c | 2 +-
+ src/via_exa_h6.c | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/via_exa_h2.c b/src/via_exa_h2.c
+index c1056a7..982fad3 100644
+--- a/src/via_exa_h2.c
++++ b/src/via_exa_h2.c
+@@ -173,7 +173,7 @@ viaExaPrepareSolid_H2(PixmapPtr pPixmap, int alu, Pixel planeMask, Pixel fg)
+     if (exaGetPixmapPitch(pPixmap) & 7)
+         return FALSE;
+ 
+-    if (!viaAccelSetMode(pPixmap->drawable.depth, tdc))
++    if (!viaAccelSetMode(pPixmap->drawable.bitsPerPixel, tdc))
+         return FALSE;
+ 
+     if (!viaAccelPlaneMaskHelper_H2(tdc, planeMask))
+diff --git a/src/via_exa_h6.c b/src/via_exa_h6.c
+index 136e6e0..4cb62cd 100644
+--- a/src/via_exa_h6.c
++++ b/src/via_exa_h6.c
+@@ -174,7 +174,7 @@ viaExaPrepareSolid_H6(PixmapPtr pPixmap, int alu, Pixel planeMask, Pixel fg)
+     if (exaGetPixmapPitch(pPixmap) & 7)
+         return FALSE;
+ 
+-    if (!viaAccelSetMode(pPixmap->drawable.depth, tdc))
++    if (!viaAccelSetMode(pPixmap->drawable.bitsPerPixel, tdc))
+         return FALSE;
+ 
+     if (!viaAccelPlaneMaskHelper_H6(tdc, planeMask))
+-- 
+2.53.0
+

@@ -329,7 +329,12 @@ impl XRenderer {
             }
         }
         let src = self.solid(color)?;
-        self.conn.render_composite_glyphs32(PictOp::OVER, src, self.back_pict, self.a8, self.glyphset, 0, 0, &cmds)?;
+        // No mask format: each glyph is composited straight onto the back buffer. With one, the
+        // X server first draws the run into a temporary A8 picture, which openchrome's 3D engine
+        // cannot render to, so every run fell back to software (and pulled the back buffer out
+        // of video memory). Antialiased edges of touching glyphs blend twice; at these sizes
+        // glyphs do not overlap.
+        self.conn.render_composite_glyphs32(PictOp::OVER, src, self.back_pict, x11rb::NONE, self.glyphset, 0, 0, &cmds)?;
         Ok(())
     }
 }
