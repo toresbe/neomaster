@@ -672,6 +672,13 @@ pub fn spawn(
         }
     };
     info!("N.MUSIC: Music Assistant at {}, library mirror in {}", cfg.url, cfg.data_dir.display());
+    if cfg.sendspin.as_ref().and_then(|s| s.device.as_deref()) == Some("null") {
+        // --sim's silent default; on the BM5 this looks exactly like a broken player
+        warn!(
+            "N.MUSIC: the player plays into ALSA \"null\" and is silent; set NEOMASTER_PLAYER_DEVICE \
+             (on the BM5: plughw:CARD=VT82xx,DEV=0, the analog out to the PC2) to hear it"
+        );
+    }
     let (tx, rx) = mpsc::unbounded_channel();
     rt.spawn(run(cfg, rx, events, queue_tx));
     (Some(tx), queue_rx)
